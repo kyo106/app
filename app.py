@@ -32,52 +32,65 @@ seen_mushroom_ids = set()
 
 # ==================== 1. 全自動後台掃描排程 ====================
 def auto_fetch_radar_data():
-    """
-    此排程每隔數分鐘執行一次，自動抓取目標地圖的資料
+   """
+    定時自動向外部雷達發送請求，抓取真實的即時蘑菇資料
     """
     global live_mushrooms, seen_mushroom_ids
-    print("雷達開始自動掃描目標區域...")
+    print("雷達開始自動向外部伺服器抓取資料...")
+
+    # Pipi Mushroom 底層取得地圖標記的 API 端點（regionCode=TW 代表台灣）
+    api_url = "https://pipimushroom.com/api/getmapmarker.aspx?regionCode=TW"
     
-    # 範例：目標雷達 API（可置換為任何提供即時蘑菇 JSON 的端點）
-    # 例如：https://pipimushroom.com/ 或其他社群 API
-    target_api_url = "https://example.com/api/get_mushrooms"
-    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://pipimushroom.com/mfmap.aspx?regionCode=TW"
+    }
+
     try:
-        # 發送 GET 請求取得目標區域蘑菇資料
-        headers = {"User-Agent": "Mozilla/5.0"}
-        # response = requests.get(target_api_url, headers=headers, timeout=10)
-        # raw_data = response.json()
+        response = requests.get(api_url, headers=headers, timeout=15)
         
-        # --- 模擬抓取到的即時原始資料格式 ---
-        raw_data = [
-            {"id": "JP-101", "name": "東京鐵塔前", "type": "巨大火蘑菇", "lat": 35.658581, "lng": 139.745438},
-            {"id": "TW-202", "name": "台北101旁", "type": "巨大水晶蘑菇", "lat": 25.0339, "lng": 121.5644},
-            {"id": "TW-203", "name": "某普通小公園", "type": "普通紅蘑菇", "lat": 25.0400, "lng": 121.5100}
-        ]
-
-        # 過濾目標關鍵字
-        TARGET_KEYWORDS = ["巨大", "火", "水", "水晶", "電", "毒", "神秘"]
-        
-        new_found_list = []
-        for item in raw_data:
-            m_type = item.get("type", "")
-            m_id = item.get("id")
+        # 檢查是否正常回傳 JSON
+        if response.status_code == 200:
+            raw_data = response.json()
             
-            # 判斷是否為巨大/元素特殊菇
-            if any(k in m_type for k in TARGET_KEYWORDS):
-                new_found_list.append(item)
-                
-                # 若為首次發現且設定了廣播目標，直接發送主動推播
-                if m_id not in seen_mushroom_ids:
-                    seen_mushroom_ids.add(m_id)
-                    broadcast_new_mushroom(item)
+            # 定義需要篩選的目標屬性與巨大蘑菇
+            TARGET_KEYWORDS = ["巨大", "火", "水", "水晶", "電", "毒", "神秘", "活動"]
+            
+            new_found_list = []
+            
+            # 解析回傳的資料清單
+            for item in raw_data:
+                # 取得名稱、種類、經緯度（依據 API 欄位命名相容取值）
+                m_name = item.get("name") or item.get("title") or "未知地標"
+                m_type = item.get("type") or item.get("mushroomType") or item.get("desc") or ""
+                lat = item.get("lat") or item.get("latitude")
+                lng = item.get("lng") or item.get("longitude")
+                m_id = item.get("id") or f"{lat}_{lng}"
 
-        # 更新快取庫
-        live_mushrooms = new_found_list
-        print(f"掃描完畢，目前掌握 {len(live_mushrooms)} 朵特殊/巨大蘑菇！")
+                # 只要符合巨大或元素關鍵字即收入清單
+                if any(k in str(m_type) for k in TARGET_KEYWORDS):
+                    mushroom_obj = {
+                        "id": m_id,
+                        "name": m_name,
+                        "type": m_type,
+                        "lat": lat,
+                        "lng": lng
+                    }
+                    new_found_list.append(mushroom_obj)
+                    
+                    # 若為首次發現且有設定廣播目標群組，自動發送推播
+                    if m_id not in seen_mushroom_ids:
+                        seen_mushroom_ids.add(m_id)
+                        broadcast_new_mushroom(mushroom_obj)
+
+            # 更新當前快取
+            live_mushrooms = new_found_list
+            print(f"抓取成功！目前共鎖定 {len(live_mushrooms)} 朵巨大/特殊元素蘑菇。")
+        else:
+            print(f"API 請求失敗，狀態碼：{response.status_code}")
 
     except Exception as e:
-        print(f"自動掃描錯誤: {e}")
+        print(f"自動抓取資料時發生例外錯誤: {e}")
 
 def broadcast_new_mushroom(m):
     """主動推播新發現的巨大蘑菇到 LINE 群組"""
@@ -100,6 +113,9 @@ def broadcast_new_mushroom(m):
 scheduler = BackgroundScheduler()
 scheduler.add_job(func=auto_fetch_radar_data, trigger="interval", minutes=5)
 scheduler.start()
+
+# 程式剛啟動時，先立即執行一次抓取，避免前 5 分鐘無資料
+auto_fetch_radar_data()
 
 # ==================== 2. LINE 查詢與互動處理 ====================
 @app.route("/callback", methods=['POST'])
