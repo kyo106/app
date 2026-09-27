@@ -32,7 +32,7 @@ seen_mushroom_ids = set()
 
 # ==================== 1. 全自動後台掃描排程 ====================
 def auto_fetch_radar_data():
-   """
+    """
     定時自動向外部雷達發送請求，抓取真實的即時蘑菇資料
     """
     global live_mushrooms, seen_mushroom_ids
