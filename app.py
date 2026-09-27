@@ -114,7 +114,7 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(func=auto_fetch_radar_data, trigger="interval", minutes=5)
 scheduler.start()
 
-# 程式剛啟動時，先立即執行一次抓取，避免前 5 分鐘無資料
+# 程式載入時「強制立刻執行一次」
 auto_fetch_radar_data()
 
 # ==================== 2. LINE 查詢與互動處理 ====================
@@ -151,9 +151,6 @@ def handle_text_message(event):
                 )
             )
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
