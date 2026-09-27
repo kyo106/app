@@ -1,7 +1,9 @@
 import os
-import requests
+import re
+import threading
+import asyncio
+import discord
 from flask import Flask, request, abort
-from apscheduler.schedulers.background import BackgroundScheduler
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
@@ -10,114 +12,86 @@ from linebot.v3.messaging import (
     MessagingApi,
     ReplyMessageRequest,
     PushMessageRequest,
-    TextMessage,
-    FlexMessage,
-    FlexContainer
+    TextMessage
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
 app = Flask(__name__)
 
+# --- 讀取環境變數 ---
 CHANNEL_SECRET = os.environ.get("CHANNEL_SECRET", "0f6c7d5c9921290c9dd87cdb83de9784")
 CHANNEL_ACCESS_TOKEN = os.environ.get("CHANNEL_ACCESS_TOKEN", "Bppdi4+cXtgaEKyrEQMO5Tc2MwK+NxZiFNqVWupQPiGT2MTxfuBg5Ij9B0rFMaPr5CFuabOrj+x6T5BVVkyDU1kPxyflwRG7DNplH6Fv7cBgEb4mR5QRLjc/FYSnlgZHbh0Fs1fiG/UGKFIHgKN2ZgdB04t89/1O/w1cDnyilFU=")
-# 若要在群組主動廣播，需填入目標 Group ID 或個人 User ID
-TARGET_CHAT_ID = os.environ.get("TARGET_CHAT_ID", "")
+DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "")
+raw_channel_id = os.environ.get("DISCORD_CHANNEL_ID", "0")
+TARGET_CHANNEL_ID = int(raw_channel_id) if raw_channel_id.isdigit() else 0
 
 handler = WebhookHandler(CHANNEL_SECRET)
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 
-# 儲存全自動抓回來的巨大/元素蘑菇
+# 儲存監聽到的即時蘑菇情報
 live_mushrooms = []
-seen_mushroom_ids = set()
 
-# ==================== 1. 全自動後台掃描排程 ====================
-def auto_fetch_radar_data():
-    """
-    定時自動向外部雷達發送請求，抓取真實的即時蘑菇資料
-    """
-    global live_mushrooms, seen_mushroom_ids
-    print("雷達開始自動向外部伺服器抓取資料...")
+# ==================== Discord 監聽客戶端 ====================
+intents = discord.Intents.default()
+intents.message_content = True
+discord_client = discord.Client(intents=intents)
 
-    # Pipi Mushroom 底層取得地圖標記的 API 端點（regionCode=TW 代表台灣）
-    api_url = "https://pipimushroom.com/api/getmapmarker.aspx?regionCode=TW"
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer": "https://pipimushroom.com/mfmap.aspx?regionCode=TW"
-    }
+@discord_client.event
+async def on_ready():
+    print(f"✅ Discord 監聽已成功啟動！登入身分：{discord_client.user}")
 
-    try:
-        response = requests.get(api_url, headers=headers, timeout=15)
-        
-        # 檢查是否正常回傳 JSON
-        if response.status_code == 200:
-            raw_data = response.json()
-            
-            # 定義需要篩選的目標屬性與巨大蘑菇
-            TARGET_KEYWORDS = ["巨大", "火", "水", "水晶", "電", "毒", "神秘", "活動"]
-            
-            new_found_list = []
-            
-            # 解析回傳的資料清單
-            for item in raw_data:
-                # 取得名稱、種類、經緯度（依據 API 欄位命名相容取值）
-                m_name = item.get("name") or item.get("title") or "未知地標"
-                m_type = item.get("type") or item.get("mushroomType") or item.get("desc") or ""
-                lat = item.get("lat") or item.get("latitude")
-                lng = item.get("lng") or item.get("longitude")
-                m_id = item.get("id") or f"{lat}_{lng}"
-
-                # 只要符合巨大或元素關鍵字即收入清單
-                if any(k in str(m_type) for k in TARGET_KEYWORDS):
-                    mushroom_obj = {
-                        "id": m_id,
-                        "name": m_name,
-                        "type": m_type,
-                        "lat": lat,
-                        "lng": lng
-                    }
-                    new_found_list.append(mushroom_obj)
-                    
-                    # 若為首次發現且有設定廣播目標群組，自動發送推播
-                    if m_id not in seen_mushroom_ids:
-                        seen_mushroom_ids.add(m_id)
-                        broadcast_new_mushroom(mushroom_obj)
-
-            # 更新當前快取
-            live_mushrooms = new_found_list
-            print(f"抓取成功！目前共鎖定 {len(live_mushrooms)} 朵巨大/特殊元素蘑菇。")
-        else:
-            print(f"API 請求失敗，狀態碼：{response.status_code}")
-
-    except Exception as e:
-        print(f"自動抓取資料時發生例外錯誤: {e}")
-
-def broadcast_new_mushroom(m):
-    """主動推播新發現的巨大蘑菇到 LINE 群組"""
-    if not TARGET_CHAT_ID:
+@discord_client.event
+async def on_message(message):
+    global live_mushrooms
+    # 忽略自己的發言
+    if message.author == discord_client.user:
         return
+    # 若有指定頻道，只監聽目標頻道
+    if TARGET_CHANNEL_ID and message.channel.id != TARGET_CHANNEL_ID:
+        return
+
+    content = message.content
+    print(f"收到 Discord 訊息: {content}")
     
-    gmaps_url = f"https://www.google.com/maps/search/?api=1&query={m['lat']},{m['lng']}"
-    msg_text = f"🚨 【雷達自動捕獲：{m['type']}】\n📍 地標：{m['name']}\n🌐 座標：{m['lat']}, {m['lng']}\n🗺️ 導航：{gmaps_url}"
+    TARGET_KEYWORDS = ["巨大", "火", "水", "水晶", "電", "毒", "神秘", "活動", "蘑菇", "菇"]
     
-    with ApiClient(configuration) as api_client:
-        line_bot_api = MessagingApi(api_client)
-        line_bot_api.push_message(
-            PushMessageRequest(
-                to=TARGET_CHAT_ID,
-                messages=[TextMessage(text=msg_text)]
-            )
-        )
+    # 判斷是否包含關鍵字
+    if any(k in content for k in TARGET_KEYWORDS):
+        # 擷取經緯度座標
+        coord_match = re.search(r"(-?\d+\.\d+)[,\s]+(-?\d+\.\d+)", content)
+        lat, lng = (coord_match.group(1), coord_match.group(2)) if coord_match else ("", "")
 
-# 啟動背景排程：每 5 分鐘自動掃描一次
-scheduler = BackgroundScheduler()
-scheduler.add_job(func=auto_fetch_radar_data, trigger="interval", minutes=5)
-scheduler.start()
+        mushroom_info = {
+            "title": content.split("\n")[0][:40],
+            "raw": content,
+            "lat": lat,
+            "lng": lng
+        }
+        
+        # 存入清單，保留最新 30 筆
+        live_mushrooms.insert(0, mushroom_info)
+        if len(live_mushrooms) > 30:
+            live_mushrooms.pop()
+            
+        print(f"⭐ 成功捕獲蘑菇情報，目前庫存: {len(live_mushrooms)} 筆")
 
-# 程式載入時「強制立刻執行一次」
-auto_fetch_radar_data()
+# ==================== 啟動 Discord 背景連線 ====================
+def start_discord_bot():
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(discord_client.start(DISCORD_TOKEN))
+    except Exception as e:
+        print(f"❌ Discord 連線失敗: {e}")
 
-# ==================== 2. LINE 查詢與互動處理 ====================
+if DISCORD_TOKEN:
+    print("正在啟動 Discord 監聽背景執行緒...")
+    t = threading.Thread(target=start_discord_bot, daemon=True)
+    t.start()
+else:
+    print("⚠️ 警告：未設定 DISCORD_TOKEN 環境變數，Discord 監聽不會啟動！")
+
+# ==================== LINE 伺服器路由 ====================
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers.get('X-Line-Signature', '')
@@ -132,16 +106,16 @@ def callback():
 def handle_text_message(event):
     user_text = event.message.text.strip()
 
-    # 指令：查巨大 / 雷達
-    if user_text in ["查巨大", "巨大雷達", "雷達"]:
+    if user_text in ["雷達", "查巨大", "巨大"]:
         if not live_mushrooms:
-            reply = "目前雷達掃描區域內暫無巨大特殊蘑菇！"
+            reply = "目前暫無監聽到任何巨大特殊蘑菇情報！"
         else:
             lines = []
-            for m in live_mushrooms[:5]:  # 只取前 5 筆避免洗版
-                lines.append(f"🍄 {m['type']} - {m['name']}\n`{m['lat']}, {m['lng']}`")
-            reply = "📡 【全球雷達即時自動偵測】\n\n" + "\n\n".join(lines)
-        
+            for idx, m in enumerate(live_mushrooms[:5], start=1):
+                loc = f"\n  座標：{m['lat']},{m['lng']}" if m['lat'] else ""
+                lines.append(f"{idx}. {m['title']}{loc}")
+            reply = "📡 【Discord 即時監聽情報清單】\n\n" + "\n\n".join(lines)
+            
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             line_bot_api.reply_message(
