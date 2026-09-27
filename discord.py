@@ -57,7 +57,7 @@ async def on_message(message):
     
     # 判斷是否包含關鍵字
     if any(k in content for k in TARGET_KEYWORDS):
-        # 嘗試擷取經緯度座標 (支援常見格式)
+        # 擷取經緯度座標
         coord_match = re.search(r"(-?\d+\.\d+)[,\s]+(-?\d+\.\d+)", content)
         lat, lng = (coord_match.group(1), coord_match.group(2)) if coord_match else ("", "")
 
