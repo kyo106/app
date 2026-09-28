@@ -189,6 +189,27 @@ def handle_text_message(event):
                 ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=reply)])
             )
 
+# 測試推播專用指令
+    if user_text == "測試推播":
+        if not TARGET_LINE_ID:
+            reply = "⚠️ 尚未設定 TARGET_LINE_ID 環境變數，無法推播！"
+        elif not live_mushrooms:
+            reply = "⚠️ 目前記憶體內沒有蘑菇資料，無法進行推播測試！"
+        else:
+            # 抓取目前清單中的第 1 朵蘑菇進行推播測試
+            test_target = live_mushrooms[0]
+            send_line_push_notification(test_target)
+            reply = f"已嘗試向 ID ({TARGET_LINE_ID[:6]}...) 觸發推播測試！請檢查是否收到訊息。"
+
+        with ApiClient(configuration) as api_client:
+            MessagingApi(api_client).reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=reply)]
+                )
+            )
+        return
+        
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
