@@ -13,6 +13,23 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
+from linebot.v3.webhooks import JoinEvent
+
+@handler.add(JoinEvent)
+def handle_join(event):
+    # 當機器人被加入群組或多人聊天室時觸發
+    if event.source.type == "group":
+        group_id = event.source.group_id
+        print(f"🎉 機器人已加入群組，群組 ID 為: {group_id}")
+        
+        reply_text = f"大家好！皮克敏雷達已就緒。\n本群組 ID 為：\n{group_id}\n\n已記錄此群組供推播使用！"
+        with ApiClient(configuration) as api_client:
+            MessagingApi(api_client).reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=reply_text)]
+                )
+            )
 app = Flask(__name__)
 
 # --- LINE 設定讀取 ---
