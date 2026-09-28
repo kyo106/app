@@ -16,7 +16,7 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent, JoinEvent
 
 app = Flask(__name__)
 
-# ==================== 1. 基礎設定與環境變數 ====================
+# ==================== 1. 環境變數與初始化 ====================
 CHANNEL_SECRET = os.environ.get("CHANNEL_SECRET", "")
 CHANNEL_ACCESS_TOKEN = os.environ.get("CHANNEL_ACCESS_TOKEN", "")
 TARGET_LINE_ID = os.environ.get("TARGET_LINE_ID", "")
@@ -32,22 +32,20 @@ LEVEL_MAP = {
     4: "巨大蘑菇"
 }
 
-# 經實機校正後的蘑菇種類對照表
+# 實機校正後的蘑菇種類對照表
 TYPE_MAP = {
-    # 基礎 7 色
     "1": "紅",
     "2": "黃",
-    "3": "藍",
-    "4": "白",
-    "5": "紫",
-    "6": "灰色",
-    "7": "粉紅",
-    # 特殊元素
-    "8": "一般水",
-    "9": "一般火",
+    "3": "灰色",
+    "4": "藍",
+    "5": "紫色",
+    "6": "黑色",
+    "7": "白色",
+    "8": "電",
+    "9": "火",
     "11": "水晶",
-    "12": "水",
-    "13": "火",
+    "12": "紫色",
+    "13": "粉紅",
     "17": "電",
     "18": "毒",
     "26": "冰藍",
@@ -55,9 +53,8 @@ TYPE_MAP = {
     "mystery": "神秘活動"
 }
 
-# ==================== 2. 主動推播發送 ====================
+# ==================== 2. 主動推播功能 ====================
 def send_line_push_notification(mushroom):
-    """偵測到新巨大菇時主動發送 LINE 推播"""
     if not TARGET_LINE_ID:
         return
 
@@ -81,18 +78,17 @@ def send_line_push_notification(mushroom):
     except Exception as e:
         print(f"❌ 推播失敗: {e}")
 
-# ==================== 3. 定期向 API 同步最新資料 ====================
+# ==================== 3. 定期資料擷取 ====================
 def fetch_and_notify_mushrooms():
     global live_mushrooms, notified_ids
     print("📡 開始同步 mush.odyliao.cc 點位...")
 
     api_url = "https://mush.odyliao.cc/api/mushrooms"
-    # 鎖定大菇(3)、巨大菇(4)，包含各類元素與普通顏色
     params = {
         "limit": "1000",
         "cache": "brief",
         "levels": "3,4",
-        "types": "1,2,3,4,5,6,7,11,12,13,17,18,26,ice",
+        "types": "1,2,3,4,5,6,7,8,9,11,12,13,17,18,26,ice",
         "sort": "discovered-desc",
         "prioritize_low": "1",
         "under_five": "1",
@@ -131,7 +127,7 @@ def fetch_and_notify_mushrooms():
                 }
                 parsed_list.append(m_obj)
 
-                # 排除初次啟動狂洗：僅針對之後發現且未通知過的「巨大蘑菇 (level=4)」推播
+                # 初次啟動後，僅對新出現且為巨大菇 (level=4) 的點位推播
                 if len(notified_ids) > 0 and m_level == 4 and m_id not in notified_ids:
                     send_line_push_notification(m_obj)
 
@@ -144,14 +140,14 @@ def fetch_and_notify_mushrooms():
     except Exception as e:
         print(f"抓取異常: {e}")
 
-# 排程：每 2 分鐘自動更新一次
+# 每 2 分鐘自動更新一次
 scheduler = BackgroundScheduler()
 scheduler.add_job(func=fetch_and_notify_mushrooms, trigger="interval", minutes=2)
 scheduler.start()
 
 fetch_and_notify_mushrooms()
 
-# ==================== 4. LINE Webhook 伺服器 ====================
+# ==================== 4. LINE Webhook 路由與事件 ====================
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers.get('X-Line-Signature', '')
@@ -164,7 +160,6 @@ def callback():
 
 @handler.add(JoinEvent)
 def handle_join(event):
-    """機器人加入群組時回傳群組 ID"""
     if event.source.type == "group":
         group_id = event.source.group_id
         reply_text = f"大家好！皮克敏雷達已就緒。\n本群組 ID 為：\n{group_id}\n\n請將此 ID 填入 Render 的 TARGET_LINE_ID 環境變數。"
@@ -177,7 +172,6 @@ def handle_join(event):
 def handle_text_message(event):
     user_text = event.message.text.strip()
 
-    # 查 ID
     if user_text == "查ID":
         source_id = event.source.user_id
         if hasattr(event.source, "group_id") and event.source.group_id:
@@ -189,7 +183,6 @@ def handle_text_message(event):
             )
         return
 
-    # 測試推播
     if user_text == "測試推播":
         if not TARGET_LINE_ID:
             reply = "尚未設定 TARGET_LINE_ID，無法推播！"
@@ -204,7 +197,6 @@ def handle_text_message(event):
             )
         return
 
-    # 查巨大 / 雷達
     if user_text in ["查巨大", "巨大", "雷達"]:
         giants = [m for m in live_mushrooms if m.get("level") == 4]
         items = (giants if giants else live_mushrooms)[:5]
