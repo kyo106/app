@@ -89,7 +89,6 @@ def fetch_and_notify_mushrooms():
         "limit": "1000",
         "cache": "brief",
         "levels": "3,4",
-        "types": "2,3,5,6,7,8,9,11,12,13,17,18",
         "sort": "discovered-desc",
         "prioritize_low": "1",
         "under_five": "1",
@@ -128,6 +127,15 @@ def fetch_and_notify_mushrooms():
                 }
                 parsed_list.append(m_obj)
 
+                # 只有符合以下條件才會推播：
+                # 1. 巨大蘑菇 (level == 4)
+                # 2. 特殊元素大菇 (level == 3 且 type 在白名單中)
+                is_giant = (m_level == 4)
+                is_target_element = (m_level == 3 and m_type in TARGET_SPECIAL_TYPES)
+
+                if len(notified_ids) > 0 and (is_giant or is_target_element) and m_id not in notified_ids:
+                    send_line_push_notification(m_obj)
+                
                 # 初次啟動記錄 baseline；之後只要出現新蘑菇 (大菇 3 或 巨大 4) 立即推播
                 if len(notified_ids) > 0 and m_level in [3, 4] and m_id not in notified_ids:
                     send_line_push_notification(m_obj)
