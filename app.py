@@ -1,28 +1,12 @@
 import os
 import requests
-from flask import Flask, request, abort
+from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
-from linebot.v3 import WebhookHandler
-from linebot.v3.exceptions import InvalidSignatureError
-from linebot.v3.messaging import (
-    Configuration,
-    ApiClient,
-    MessagingApi,
-    PushMessageRequest,
-    ReplyMessageRequest,
-    TextMessage
-)
-from linebot.v3.webhooks import MessageEvent, TextMessageContent, JoinEvent
 
 app = Flask(__name__)
 
 # ==================== 1. 環境變數與初始化 ====================
-CHANNEL_SECRET = os.environ.get("CHANNEL_SECRET", "")
-CHANNEL_ACCESS_TOKEN = os.environ.get("CHANNEL_ACCESS_TOKEN", "")
-TARGET_LINE_ID = os.environ.get("TARGET_LINE_ID", "")
-
-handler = WebhookHandler(CHANNEL_SECRET)
-configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 
 live_mushrooms = []
 notified_ids = set()
@@ -32,7 +16,7 @@ LEVEL_MAP = {
     4: "巨大蘑菇"
 }
 
-# 經多輪實機比對校正後的蘑菇種類對照表
+# 經指定配置更新後的蘑菇種類對照表
 TYPE_MAP = {
     # 基礎顏色
     "2": "紅色",
@@ -50,35 +34,50 @@ TYPE_MAP = {
     "13": "水晶",
     "18": "毒",
     "ice": "冰藍",
-    "event": "神秘活動"
+    "event": "神秘活動",
+    "mystery": "神秘活動"
 }
-TARGET_SPECIAL_TYPES = {"11","17","18","12","13","ice","event"}
 
-# ==================== 2. 主動推播功能 ====================
-def send_line_push_notification(mushroom):
-    """主動發送 LINE 訊息通知"""
-    if not TARGET_LINE_ID:
+# 【推播白名單】：只允許元素大菇與特殊蘑菇
+TARGET_SPECIAL_TYPES = {"11", "12", "13", "17", "18", "ice", "event", "mystery"}
+
+# ==================== 2. Discord Webhook 推播功能 ====================
+def send_discord_notification(mushroom):
+    """發送卡片格式到 Discord 頻道"""
+    if not DISCORD_WEBHOOK_URL:
+        print("⚠️ 未設定 DISCORD_WEBHOOK_URL，跳過推播。")
         return
 
-    msg = (
-        f"🚨 【發現全新蘑菇點位！】\n"
-        f"🍄 種類：{mushroom['title']}\n"
-        f"🌐 座標：`{mushroom['lat']}, {mushroom['lng']}`\n"
-        f"🗺️ Google 地圖導航：\n{mushroom['gmaps']}"
-    )
+    # 巨大菇用金色，元素大菇用紅色
+    color = 0xF1C40F if mushroom['level'] == 4 else 0xE74C3C
+
+    embed_data = {
+        "title": f"🚨 發現目標蘑菇：{mushroom['title']}",
+        "color": color,
+        "fields": [
+            {"name": "🍄 等級與種類", "value": mushroom['title'], "inline": True},
+            {"name": "🌐 座標", "value": f"`{mushroom['lat']}, {mushroom['lng']}`", "inline": True},
+            {"name": "🗺️ Google 地圖導航", "value": f"[點此前往 Google 地圖]({mushroom['gmaps']})", "inline": False}
+        ],
+        "footer": {
+            "text": "皮克敏雷達即時通報 • 無上限自動推送"
+        }
+    }
+
+    payload = {
+        "username": "皮克敏雷達管家",
+        "avatar_url": "https://cdn-icons-png.flaticon.com/512/616/616490.png",
+        "embeds": [embed_data]
+    }
 
     try:
-        with ApiClient(configuration) as api_client:
-            line_bot_api = MessagingApi(api_client)
-            line_bot_api.push_message(
-                PushMessageRequest(
-                    to=TARGET_LINE_ID,
-                    messages=[TextMessage(text=msg)]
-                )
-            )
-        print(f"✅ 已成功推播至 LINE: {mushroom['title']}")
+        resp = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
+        if resp.status_code in [200, 204]:
+            print(f"✅ 已成功推播至 Discord: {mushroom['title']}")
+        else:
+            print(f"❌ Discord 推播失敗，狀態碼：{resp.status_code}，原因：{resp.text}")
     except Exception as e:
-        print(f"❌ 推播失敗: {e}")
+        print(f"❌ Discord 發送異常: {e}")
 
 # ==================== 3. 定期資料擷取與自動通報 ====================
 def fetch_and_notify_mushrooms():
@@ -93,7 +92,7 @@ def fetch_and_notify_mushrooms():
         "sort": "discovered-desc",
         "prioritize_low": "1",
         "under_five": "1",
-        "discovered_within_hours": "6",
+        "discovered_within_hours": "1",
         "bbox": "-85.45000,-35.75000,85.45000,61.80000"
     }
     headers = {
@@ -122,31 +121,28 @@ def fetch_and_notify_mushrooms():
                     "id": m_id,
                     "title": title,
                     "level": m_level,
+                    "type": m_type,
                     "lat": lat,
                     "lng": lng,
                     "gmaps": f"https://www.google.com/maps/search/?api=1&query={lat},{lng}"
                 }
                 parsed_list.append(m_obj)
 
-                # 只有符合以下條件才會推播：
+                # 【推播過濾條件】：
                 # 1. 巨大蘑菇 (level == 4)
                 # 2. 特殊元素大菇 (level == 3 且 type 在白名單中)
                 is_giant = (m_level == 4)
                 is_target_element = (m_level == 3 and m_type in TARGET_SPECIAL_TYPES)
 
                 if len(notified_ids) > 0 and (is_giant or is_target_element) and m_id not in notified_ids:
-                    send_line_push_notification(m_obj)
-                
-                # 初次啟動記錄 baseline；之後只要出現新蘑菇 (大菇 3 或 巨大 4) 立即推播
-                if len(notified_ids) > 0 and m_level in [3, 4] and m_id not in notified_ids:
-                    send_line_push_notification(m_obj)
+                    send_discord_notification(m_obj)
 
                 notified_ids.add(m_id)
 
             live_mushrooms = parsed_list
             print(f"資料更新完成，共掌握 {len(live_mushrooms)} 朵蘑菇。")
         else:
-            print(f"API 回應異常，代碼：{res.status_code}")
+            print(f"API 回應異常，代碼：{res.status_code}，原因：{res.text}")
     except Exception as e:
         print(f"抓取異常: {e}")
 
@@ -157,107 +153,32 @@ scheduler.start()
 
 fetch_and_notify_mushrooms()
 
-# ==================== 4. 首頁與 LINE Webhook 路由 ====================
+# ==================== 4. 路由設定 ====================
 @app.route("/", methods=['GET'])
 def home():
-    """提供 UptimeRobot 監控專用的健康檢查端點 (回傳 200 OK)"""
-    return "Pikmin Bloom Bot is Running!", 200
+    """提供 UptimeRobot 監控防休眠 (200 OK)"""
+    giant_count = sum(1 for m in live_mushrooms if m.get("level") == 4)
+    target_count = sum(1 for m in live_mushrooms if m.get("level") == 4 or (m.get("level") == 3 and m.get("type") in TARGET_SPECIAL_TYPES))
+    return jsonify({
+        "status": "online",
+        "message": "Pikmin Bloom Discord Bot is Running!",
+        "cached_mushrooms": len(live_mushrooms),
+        "target_mushrooms": target_count,
+        "giant_mushrooms": giant_count
+    }), 200
 
-@app.route("/callback", methods=['POST'])
-def callback():
-    signature = request.headers.get('X-Line-Signature', '')
-    body = request.get_data(as_text=True)
-    try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        abort(400)
-    return 'OK'
-
-@handler.add(JoinEvent)
-def handle_join(event):
-    if event.source.type == "group":
-        group_id = event.source.group_id
-        reply_text = f"大家好！皮克敏雷達已加入群組。\n本群組 ID 為：\n{group_id}\n\n請將此數值填入 Render 的 TARGET_LINE_ID 環境變數。"
-        with ApiClient(configuration) as api_client:
-            MessagingApi(api_client).reply_message(
-                ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=reply_text)])
-            )
-
-# ==================== 5. 完整 LINE 訊息指令處理 ====================
-@handler.add(MessageEvent, message=TextMessageContent)
-def handle_text_message(event):
-    user_text = event.message.text.strip()
-
-    # 指令 1：查詢聊天室/群組 ID
-    if user_text == "查ID":
-        source_id = event.source.user_id
-        if hasattr(event.source, "group_id") and event.source.group_id:
-            source_id = event.source.group_id
-        reply = f"📌 當前聊天室推播 ID：\n{source_id}\n\n若要接收自動推播，請將此 ID 填入 Render 的 TARGET_LINE_ID。"
-        with ApiClient(configuration) as api_client:
-            MessagingApi(api_client).reply_message(
-                ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=reply)])
-            )
-        return
-
-    # 指令 2：測試推播連線
-    if user_text == "測試推播":
-        if not TARGET_LINE_ID:
-            reply = "⚠️ 尚未設定 TARGET_LINE_ID，無法執行推播！"
-        elif not live_mushrooms:
-            reply = "⚠️ 目前記憶體內尚未載入點位資料，請稍候重試！"
-        else:
-            send_line_push_notification(live_mushrooms[0])
-            reply = "🚀 已嘗試送出推播測試！請檢查是否有收到推播訊息。"
-        with ApiClient(configuration) as api_client:
-            MessagingApi(api_client).reply_message(
-                ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=reply)])
-            )
-        return
-
-    # 指令 3：查詢系統狀態
-    if user_text == "狀態":
-        giant_count = sum(1 for m in live_mushrooms if m.get("level") == 4)
-        reply = (
-            f"🤖 【皮克敏雷達運行狀態】\n"
-            f"✅ 背景排程：每 2 分鐘同步一次\n"
-            f"📊 目前快取總菇數：{len(live_mushrooms)} 筆\n"
-            f"🌟 巨大蘑菇數量：{giant_count} 筆\n"
-            f"🎯 推播目標 ID：{TARGET_LINE_ID[:8]}... (已就緒)" if TARGET_LINE_ID else "⚠️ 未設定 TARGET_LINE_ID"
-        )
-        with ApiClient(configuration) as api_client:
-            MessagingApi(api_client).reply_message(
-                ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=reply)])
-            )
-        return
-
-    # 指令 4：專門查詢巨大蘑菇 (Level 4)
-    if user_text in ["查巨大", "巨大"]:
-        giants = [m for m in live_mushrooms if m.get("level") == 4]
-        if not giants:
-            reply = "目前全球雷達暫無發現 Level 4 巨大蘑菇！\n（可改傳「雷達」查看最新特殊大菇）"
-        else:
-            lines = [f"{i}. 🍄 {m['title']}\n   🌐 座標：`{m['lat']}, {m['lng']}`\n   🗺️ 導航：{m['gmaps']}" for i, m in enumerate(giants[:5], 1)]
-            reply = "📡 【最新巨大蘑菇清單】\n\n" + "\n\n".join(lines)
-        with ApiClient(configuration) as api_client:
-            MessagingApi(api_client).reply_message(
-                ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=reply)])
-            )
-        return
-
-    # 指令 5：綜合雷達清單 (優先巨大，不足補大菇)
-    if user_text in ["雷達", "查大菇"]:
-        if not live_mushrooms:
-            reply = "目前尚未取得點位資料，請稍候重試！"
-        else:
-            items = live_mushrooms[:5]
-            lines = [f"{i}. 🍄 {m['title']}\n   🌐 座標：`{m['lat']}, {m['lng']}`\n   🗺️ 導航：{m['gmaps']}" for i, m in enumerate(items, 1)]
-            reply = "📡 【最新特殊蘑菇雷達點位】\n\n" + "\n\n".join(lines)
-        with ApiClient(configuration) as api_client:
-            MessagingApi(api_client).reply_message(
-                ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=reply)])
-            )
-        return
+@app.route("/test_discord", methods=['GET'])
+def test_discord():
+    """手動測試 Discord Webhook 連線"""
+    test_obj = {
+        "title": "測試火元素大蘑菇",
+        "level": 3,
+        "lat": "25.0330",
+        "lng": "121.5654",
+        "gmaps": "https://www.google.com/maps/search/?api=1&query=25.0330,121.5654"
+    }
+    send_discord_notification(test_obj)
+    return "已發送 Discord 測試訊息，請檢查頻道！", 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
