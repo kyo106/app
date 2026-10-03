@@ -89,7 +89,7 @@ def fetch_and_notify_mushrooms():
         "limit": "1000",
         "cache": "brief",
         "levels": "3,4",
-        "types": "2,3,5,6,7,8,9,11,12,13,17,18,26",
+        "types": "2,3,5,6,7,8,9,11,12,13,17,18",
         "sort": "discovered-desc",
         "prioritize_low": "1",
         "under_five": "1",
