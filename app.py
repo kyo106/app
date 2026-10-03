@@ -92,7 +92,7 @@ def fetch_and_notify_mushrooms():
         "sort": "discovered-desc",
         "prioritize_low": "1",
         "under_five": "1",
-        "discovered_within_hours": "0.5",
+        "discovered_within_hours": "6",
         "bbox": "-85.45000,-35.75000,85.45000,61.80000"
     }
     headers = {
