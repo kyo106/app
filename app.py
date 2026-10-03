@@ -52,6 +52,7 @@ TYPE_MAP = {
     "ice": "冰藍",
     "event": "神秘活動"
 }
+TARGET_SPECIAL_TYPES = {"11","17","18","12","13","ice","event"}
 
 # ==================== 2. 主動推播功能 ====================
 def send_line_push_notification(mushroom):
