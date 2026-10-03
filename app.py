@@ -49,7 +49,7 @@ TYPE_MAP = {
     "11": "火",
     "13": "水晶",
     "18": "毒",
-    "ice": "冰藍",
+    "26": "冰藍",
     "event": "神秘活動"
 }
 
@@ -89,7 +89,7 @@ def fetch_and_notify_mushrooms():
         "limit": "1000",
         "cache": "brief",
         "levels": "3,4",
-        "types": "2,3,5,6,7,8,9,11,12,13,17,18,ice,event",
+        "types": "2,3,5,6,7,8,9,11,12,13,17,18,26",
         "sort": "discovered-desc",
         "prioritize_low": "1",
         "under_five": "1",
