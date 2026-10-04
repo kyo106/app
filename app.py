@@ -1,12 +1,12 @@
 import os
-import requests
 import time
+import requests
 from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 
-# ==================== 1. 環境變數與初始化 ====================
+# ==================== 1. 環境變數與全域設定 ====================
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 
 live_mushrooms = []
@@ -17,9 +17,9 @@ LEVEL_MAP = {
     4: "巨大蘑菇"
 }
 
-# 經指定配置更新後的蘑菇種類對照表
+# 經更正後的蘑菇種類對照表
 TYPE_MAP = {
-    # 基礎顏色
+    # 基礎顏色 (不推播)
     "2": "紅色",
     "6": "黃色",
     "3": "灰色",
@@ -40,18 +40,17 @@ TYPE_MAP = {
     "mystery": "神秘活動"
 }
 
-# 【推播白名單】：只允許元素大菇與特殊蘑菇
-TARGET_SPECIAL_TYPES = {"11", "12", "13", "17", "18", "ice"}
+# 【推播白名單】：只允許純元素蘑菇 (電17, 水12, 火11, 水晶13, 毒18, 冰藍26/ice)
+TARGET_SPECIAL_TYPES = {"11", "12", "13", "17", "18", "26", "ice"}
 
-# ==================== 2. Discord Webhook 推播功能 ====================
+# ==================== 2. Discord Webhook 發送函式 ====================
 def send_discord_notification(mushroom):
-    """發送漂亮卡片格式到 Discord 頻道 (含防 429 限流重試)"""
+    """發送卡片訊息至 Discord (含防 429 頻率限制重試)"""
     if not DISCORD_WEBHOOK_URL:
         print("⚠️ 未設定 DISCORD_WEBHOOK_URL，跳過推播。")
         return
 
-    # 巨大菇用金色，元素大菇用紅色/橘色
-    color = 0xF1C40F if mushroom.get('level') == 4 else 0xE74C3C
+    color = 0xF1C40F if mushroom.get('level') == 4 else 0x3498DB
 
     embed_data = {
         "title": f"🚨 發現目標蘑菇：{mushroom['title']}",
@@ -59,10 +58,10 @@ def send_discord_notification(mushroom):
         "fields": [
             {"name": "🍄 等級與種類", "value": mushroom['title'], "inline": True},
             {"name": "🌐 座標", "value": f"`{mushroom['lat']}, {mushroom['lng']}`", "inline": True},
-            {"name": "🗺️️ Google 地圖導航", "value": f"[點此前往 Google 地圖]({mushroom['gmaps']})", "inline": False}
+            {"name": "🗺️ Google 地圖導航", "value": f"[點此前往 Google 地圖]({mushroom['gmaps']})", "inline": False}
         ],
         "footer": {
-            "text": "皮克敏雷達即時通報 • 無上限自動推送"
+            "text": "皮克敏雷達即時通報"
         }
     }
 
@@ -74,22 +73,23 @@ def send_discord_notification(mushroom):
 
     for attempt in range(3):
         try:
-            resp = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
+            resp = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=8)
             if resp.status_code in [200, 204]:
                 print(f"✅ 已成功推播至 Discord: {mushroom['title']}")
-                time.sleep(1)  # 每次發送間隔 1 秒，避免觸發每秒頻率上限
+                time.sleep(1)
                 return
             elif resp.status_code == 429:
                 wait_sec = resp.json().get("retry_after", 1.5)
-                print(f"⏳ 遭遇頻率限制，等待 {wait_sec} 秒後重試...")
+                print(f"⏳ 遭遇 Discord 限流，等待 {wait_sec} 秒...")
                 time.sleep(float(wait_sec) + 0.2)
             else:
-                print(f"❌ Discord 推播失敗，狀態碼：{resp.status_code}，原因：{resp.text}")
+                print(f"❌ Discord 推播失敗，狀態碼：{resp.status_code}")
                 break
         except Exception as e:
             print(f"❌ Discord 發送異常: {e}")
             break
-# ==================== 3. 定期資料擷取與自動通報 ====================
+
+# ==================== 3. 點位同步與通報任務 ====================
 def fetch_and_notify_mushrooms():
     global live_mushrooms, notified_ids
     print("📡 開始同步 mush.odyliao.cc 點位...")
@@ -102,7 +102,6 @@ def fetch_and_notify_mushrooms():
         "sort": "discovered-desc",
         "prioritize_low": "1",
         "under_five": "1",
-        "discovered_within_hours": "6",
         "bbox": "-85.45000,-35.75000,85.45000,61.80000"
     }
     headers = {
@@ -111,11 +110,11 @@ def fetch_and_notify_mushrooms():
     }
 
     try:
-        res = requests.get(api_url, params=params, headers=headers, timeout=12)
+        res = requests.get(api_url, params=params, headers=headers, timeout=10)
         if res.status_code == 200:
             raw_list = res.json().get("mushrooms", [])
-            
             parsed_list = []
+            
             for item in raw_list:
                 m_id = str(item.get("id"))
                 m_level = item.get("level")
@@ -139,12 +138,12 @@ def fetch_and_notify_mushrooms():
                 parsed_list.append(m_obj)
 
                 # 【推播過濾條件】：
-                # 1. 巨大蘑菇 (level == 4)
-                # 2. 特殊元素大菇 (level == 3 且 type 在白名單中)
-                is_giant = (m_level == 4)
-                is_target_element = (m_level == 3 and m_type in TARGET_SPECIAL_TYPES)
+                # 排除神秘活動 (10, event, mystery)
+                # 僅通報：非活動的巨大菇 或 純元素大菇 (電、水、火、水晶、毒、冰藍)
+                is_mystery = (m_type in ["10", "event", "mystery"])
+                is_target = not is_mystery and (m_level == 4 or (m_level == 3 and m_type in TARGET_SPECIAL_TYPES))
 
-                if len(notified_ids) > 0 and (is_giant or is_target_element) and m_id not in notified_ids:
+                if len(notified_ids) > 0 and is_target and m_id not in notified_ids:
                     send_discord_notification(m_obj)
 
                 notified_ids.add(m_id)
@@ -156,32 +155,21 @@ def fetch_and_notify_mushrooms():
     except Exception as e:
         print(f"抓取異常: {e}")
 
-# 每 2 分鐘定期檢查一次
-scheduler = BackgroundScheduler()
-scheduler.add_job(func=fetch_and_notify_mushrooms, trigger="interval", minutes=2)
-scheduler.start()
-
-fetch_and_notify_mushrooms()
-
-# ==================== 4. 路由設定 ====================
+# ==================== 4. 路由設定與防休眠 ====================
 @app.route("/", methods=['GET'])
 def home():
-    """提供 UptimeRobot 監控防休眠 (200 OK)"""
-    giant_count = sum(1 for m in live_mushrooms if m.get("level") == 4)
-    target_count = sum(1 for m in live_mushrooms if m.get("level") == 4 or (m.get("level") == 3 and m.get("type") in TARGET_SPECIAL_TYPES))
+    """提供 UptimeRobot 監控防休眠 (回傳 200 OK)"""
     return jsonify({
         "status": "online",
         "message": "Pikmin Bloom Discord Bot is Running!",
-        "cached_mushrooms": len(live_mushrooms),
-        "target_mushrooms": target_count,
-        "giant_mushrooms": giant_count
+        "cached_mushrooms": len(live_mushrooms)
     }), 200
 
 @app.route("/test_discord", methods=['GET'])
 def test_discord():
     """手動測試 Discord Webhook 連線"""
     test_obj = {
-        "title": "測試火元素大蘑菇",
+        "title": "測試水晶大蘑菇",
         "level": 3,
         "lat": "25.0330",
         "lng": "121.5654",
@@ -189,6 +177,13 @@ def test_discord():
     }
     send_discord_notification(test_obj)
     return "已發送 Discord 測試訊息，請檢查頻道！", 200
+
+# ==================== 5. 啟動排程與伺服器 ====================
+scheduler = BackgroundScheduler()
+scheduler.add_job(func=fetch_and_notify_mushrooms, trigger="interval", minutes=2)
+scheduler.start()
+
+scheduler.add_job(func=fetch_and_notify_mushrooms, trigger="date")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
