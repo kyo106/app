@@ -1,5 +1,6 @@
 import os
 import requests
+import time
 from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -26,6 +27,7 @@ TYPE_MAP = {
     "7": "白色",
     "9": "粉紅色",
     "5": "藍色",
+    "10": "神秘活動",
     
     # 元素與特殊蘑菇
     "17": "電",
@@ -43,13 +45,13 @@ TARGET_SPECIAL_TYPES = {"11", "12", "13", "17", "18", "ice", "event", "mystery"}
 
 # ==================== 2. Discord Webhook 推播功能 ====================
 def send_discord_notification(mushroom):
-    """發送卡片格式到 Discord 頻道"""
+    """發送漂亮卡片格式到 Discord 頻道 (含防 429 限流重試)"""
     if not DISCORD_WEBHOOK_URL:
         print("⚠️ 未設定 DISCORD_WEBHOOK_URL，跳過推播。")
         return
 
-    # 巨大菇用金色，元素大菇用紅色
-    color = 0xF1C40F if mushroom['level'] == 4 else 0xE74C3C
+    # 巨大菇用金色，元素大菇用紅色/橘色
+    color = 0xF1C40F if mushroom.get('level') == 4 else 0xE74C3C
 
     embed_data = {
         "title": f"🚨 發現目標蘑菇：{mushroom['title']}",
@@ -57,7 +59,7 @@ def send_discord_notification(mushroom):
         "fields": [
             {"name": "🍄 等級與種類", "value": mushroom['title'], "inline": True},
             {"name": "🌐 座標", "value": f"`{mushroom['lat']}, {mushroom['lng']}`", "inline": True},
-            {"name": "🗺️ Google 地圖導航", "value": f"[點此前往 Google 地圖]({mushroom['gmaps']})", "inline": False}
+            {"name": "🗺️️ Google 地圖導航", "value": f"[點此前往 Google 地圖]({mushroom['gmaps']})", "inline": False}
         ],
         "footer": {
             "text": "皮克敏雷達即時通報 • 無上限自動推送"
@@ -70,15 +72,23 @@ def send_discord_notification(mushroom):
         "embeds": [embed_data]
     }
 
-    try:
-        resp = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
-        if resp.status_code in [200, 204]:
-            print(f"✅ 已成功推播至 Discord: {mushroom['title']}")
-        else:
-            print(f"❌ Discord 推播失敗，狀態碼：{resp.status_code}，原因：{resp.text}")
-    except Exception as e:
-        print(f"❌ Discord 發送異常: {e}")
-
+    for attempt in range(3):
+        try:
+            resp = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
+            if resp.status_code in [200, 204]:
+                print(f"✅ 已成功推播至 Discord: {mushroom['title']}")
+                time.sleep(1)  # 每次發送間隔 1 秒，避免觸發每秒頻率上限
+                return
+            elif resp.status_code == 429:
+                wait_sec = resp.json().get("retry_after", 1.5)
+                print(f"⏳ 遭遇頻率限制，等待 {wait_sec} 秒後重試...")
+                time.sleep(float(wait_sec) + 0.2)
+            else:
+                print(f"❌ Discord 推播失敗，狀態碼：{resp.status_code}，原因：{resp.text}")
+                break
+        except Exception as e:
+            print(f"❌ Discord 發送異常: {e}")
+            break
 # ==================== 3. 定期資料擷取與自動通報 ====================
 def fetch_and_notify_mushrooms():
     global live_mushrooms, notified_ids
