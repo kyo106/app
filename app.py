@@ -3,6 +3,7 @@ import time
 import requests
 from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
+from datetime import datetime, timezone, timedelta
 
 app = Flask(__name__)
 
@@ -45,19 +46,26 @@ TARGET_SPECIAL_TYPES = {"11", "12", "13", "17", "18", "26", "ice"}
 
 # ==================== 2. Discord Webhook 發送函式 ====================
 def send_discord_notification(mushroom):
-    """發送卡片訊息至 Discord (含防 429 頻率限制重試)"""
+    """發送卡片訊息至 Discord (含台灣通報時間與防限流)"""
     if not DISCORD_WEBHOOK_URL:
         print("⚠️ 未設定 DISCORD_WEBHOOK_URL，跳過推播。")
         return
+
+    # 計算台灣時間 (UTC+8)
+    tz_tw = timezone(timedelta(hours=8))
+    now_tw = datetime.now(tz_tw)
+    time_str = now_tw.strftime("%Y-%m-%d %H:%M:%S")
 
     color = 0xF1C40F if mushroom.get('level') == 4 else 0x3498DB
 
     embed_data = {
         "title": f"🚨 發現目標蘑菇：{mushroom['title']}",
         "color": color,
+        "timestamp": datetime.now(timezone.utc).isoformat(),  # Discord 原生時間標記
         "fields": [
             {"name": "🍄 等級與種類", "value": mushroom['title'], "inline": True},
-            {"name": "🌐 座標", "value": f"`{mushroom['lat']}, {mushroom['lng']}`", "inline": True},
+            {"name": "⏰ 通報時間", "value": time_str, "inline": True},
+            {"name": "🌐 座標", "value": f"`{mushroom['lat']}, {mushroom['lng']}`", "inline": False},
             {"name": "🗺️ Google 地圖導航", "value": f"[點此前往 Google 地圖]({mushroom['gmaps']})", "inline": False}
         ],
         "footer": {
