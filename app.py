@@ -41,7 +41,7 @@ TYPE_MAP = {
 }
 
 # 【推播白名單】：只允許元素大菇與特殊蘑菇
-TARGET_SPECIAL_TYPES = {"11", "12", "13", "17", "18", "ice", "event", "mystery"}
+TARGET_SPECIAL_TYPES = {"11", "12", "13", "17", "18", "ice"}
 
 # ==================== 2. Discord Webhook 推播功能 ====================
 def send_discord_notification(mushroom):
