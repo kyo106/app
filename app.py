@@ -74,7 +74,7 @@ def send_discord_notification(mushroom):
     }
 
     payload = {
-        "username": "Bruno的皮克敏雷達管家",
+        "username": "Bruno的皮克敏雷達",
         "avatar_url": "https://cdn-icons-png.flaticon.com/512/616/616490.png",
         "embeds": [embed_data]
     }
