@@ -146,10 +146,9 @@ def fetch_and_notify_mushrooms():
                 parsed_list.append(m_obj)
 
                 # 【推播過濾條件】：
-                # 排除神秘活動 (10, event, mystery)
-                # 僅通報：非活動的巨大菇 或 純元素大菇 (電、水、火、水晶、毒、冰藍)
-                is_mystery = (m_type in ["10", "event", "mystery"])
-                is_target = not is_mystery and (m_level == 4 or (m_level == 3 and m_type in TARGET_SPECIAL_TYPES))
+                # 排除神秘活動與種類 19 (10, 19, event, mystery)
+                is_excluded = (m_type in ["10", "19", "event", "mystery"])
+                is_target = not is_excluded and (m_level == 4 or (m_level == 3 and m_type in TARGET_SPECIAL_TYPES))
 
                 if len(notified_ids) > 0 and is_target and m_id not in notified_ids:
                     send_discord_notification(m_obj)
