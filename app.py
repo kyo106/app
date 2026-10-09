@@ -1,6 +1,5 @@
 import os
 import time
-import re
 import requests
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify
@@ -14,7 +13,7 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 live_mushrooms = []
 notified_ids = set()
 
-# 地名快取，避免重複呼叫地理編碼 API
+# 地名座標快取，避免重複呼叫地理編碼
 LOCATION_COORD_CACHE = {}
 
 LEVEL_MAP = {
@@ -23,6 +22,7 @@ LEVEL_MAP = {
 }
 
 TYPE_MAP = {
+    # 基礎顏色 (不推播)
     "2": "紅色",
     "6": "黃色",
     "3": "灰色",
@@ -32,6 +32,8 @@ TYPE_MAP = {
     "5": "藍色",
     "10": "神秘活動",
     "19": "活動特殊",
+    
+    # 元素與特殊蘑菇
     "17": "電",
     "12": "水",
     "11": "火",
@@ -48,41 +50,33 @@ TARGET_SPECIAL_TYPES = {"11", "12", "13", "17", "18", "26", "ice"}
 
 # ==================== 2. 地理位置解析與概略座標計算 ====================
 def extract_location_text(item):
-    """從 API 物件中深度抓取地名文字 (例如: 巴拿馬-戴維 David)"""
-    candidate_keys = [
-        "location", "location_name", "place_name", "place", "area",
-        "city", "region", "address", "poi", "title", "notes", "desc"
-    ]
-    for key in candidate_keys:
+    """精準對接原站 location_country 與 location_city"""
+    country = str(item.get("location_country") or "").strip()
+    city = str(item.get("location_city") or "").strip()
+
+    if country and city:
+        return f"{country}-{city}"
+    elif country:
+        return country
+    elif city:
+        return city
+
+    # 備用容錯檢查
+    for key in ["location", "place", "area", "address"]:
         val = item.get(key)
-        if val and isinstance(val, str) and val.strip() and val.strip().lower() != "none":
+        if val and isinstance(val, str) and val.strip():
             return val.strip()
-
-    # 檢查巢狀物件
-    for nested_key in ["geo", "data", "meta", "info", "extra"]:
-        nested = item.get(nested_key)
-        if isinstance(nested, dict):
-            for key in candidate_keys:
-                val = nested.get(key)
-                if val and isinstance(val, str) and val.strip() and val.strip().lower() != "none":
-                    return val.strip()
-
-    country = item.get("country", "")
-    city = item.get("city", "")
-    if country or city:
-        return f"{country}-{city}".strip("-")
 
     return "未知區域"
 
 def geocode_location_to_coords(location_text):
-    """根據地名文字 (如: 巴拿馬-戴維 David) 透過 OSM 反求概略經緯度"""
+    """根據地名 (如: 巴拿馬-戴維 David) 透過 OSM 計算中心經緯度"""
     if not location_text or location_text == "未知區域":
         return None, None
 
     if location_text in LOCATION_COORD_CACHE:
         return LOCATION_COORD_CACHE[location_text]
 
-    # 清理查詢詞，提升搜尋成功率 (將 "-" 替換為空格)
     query_str = location_text.replace("-", " ").strip()
     
     try:
@@ -92,7 +86,7 @@ def geocode_location_to_coords(location_text):
             "format": "json",
             "limit": 1
         }
-        headers = {"User-Agent": "PikminRadarBotGeo/1.0"}
+        headers = {"User-Agent": "PikminRadarBotGeo/1.1 (contact: bot@pikmin.local)"}
         res = requests.get(geo_url, params=params, headers=headers, timeout=4)
         if res.status_code == 200:
             data = res.json()
@@ -109,24 +103,23 @@ def geocode_location_to_coords(location_text):
 
 # ==================== 3. Discord Webhook 發送函式 ====================
 def send_discord_notification(mushroom):
-    """發送卡片訊息至 Discord (含地名、概略座標與 Google 地圖)"""
+    """發送卡片訊息至 Discord (含所在區域、概略座標與 Google 地圖)"""
     if not DISCORD_WEBHOOK_URL:
         print("⚠️ 未設定 DISCORD_WEBHOOK_URL，跳過推播。")
         return
 
-    # 台灣時間 (UTC+8)
+    # 計算台灣時間 (UTC+8)
     tz_tw = timezone(timedelta(hours=8))
     now_tw = datetime.now(tz_tw)
     time_str = now_tw.strftime("%Y-%m-%d %H:%M:%S")
 
     color = 0xF1C40F if mushroom.get('level') == 4 else 0x3498DB
 
-    # 座標文字與導航連結
     if mushroom.get('is_exact_gps'):
         coord_text = f"`{mushroom['lat']}, {mushroom['lng']}` (精準座標)"
         gmaps_text = f"[點此前向 Google 地圖]({mushroom['gmaps']})"
     elif mushroom.get('lat') and mushroom.get('lat') != "未提供":
-        coord_text = f"`{mushroom['lat']}, {mushroom['lng']}` *(原站隱藏，此為城鎮中心估算)*"
+        coord_text = f"`{mushroom['lat']}, {mushroom['lng']}` *(城鎮中心估算)*"
         gmaps_text = f"[點此導航至該區域中心]({mushroom['gmaps']})"
     else:
         coord_text = "🔒 原站已隱藏 GPS (無法估算城鎮中心)"
@@ -196,20 +189,16 @@ def fetch_and_notify_mushrooms():
         res = requests.get(api_url, params=params, headers=headers, timeout=10)
         if res.status_code == 200:
             raw_list = res.json().get("mushrooms", [])
-            
-            if len(raw_list) > 0:
-                print(f"🔍 檢視第一筆原始點位: {raw_list[0]}")
-
             parsed_list = []
+
             for item in raw_list:
                 m_id = str(item.get("id"))
                 m_level = item.get("level")
                 m_type = str(item.get("type", ""))
 
-                # 提取地名 (例如: 巴拿馬-戴維 David)
+                # 精確讀取 location_country 與 location_city
                 location_name = extract_location_text(item)
 
-                # 原始 GPS 檢查
                 raw_lat = item.get("lat") or item.get("latitude")
                 raw_lng = item.get("lng") or item.get("longitude")
 
@@ -221,7 +210,7 @@ def fetch_and_notify_mushrooms():
                     final_lat, final_lng = raw_lat, raw_lng
                     is_exact = True
                 else:
-                    # 原站隱藏 GPS，利用地名進行概略座標估算
+                    # 原站 GPS 為 null，透過地名計算概略座標
                     approx_lat, approx_lng = geocode_location_to_coords(location_name)
                     final_lat, final_lng = approx_lat, approx_lng
                     is_exact = False
@@ -275,35 +264,28 @@ def home():
         "cached_mushrooms": len(live_mushrooms)
     }), 200
 
+@app.route("/test_discord", methods=['GET'])
+def test_discord():
+    """手動測試巴拿馬-戴維推播卡片"""
+    loc_test = "巴拿馬-戴維 David"
+    lat, lng = geocode_location_to_coords(loc_test)
+    test_obj = {
+        "title": "毒 大蘑菇",
+        "level": 3,
+        "location": loc_test,
+        "lat": str(lat) if lat else "8.4273",
+        "lng": str(lng) if lng else "-82.4309",
+        "is_exact_gps": False,
+        "gmaps": f"https://www.google.com/maps/search/?api=1&query={lat or 8.4273},{lng or -82.4309}"
+    }
+    send_discord_notification(test_obj)
+    return "已發送巴拿馬-戴維測試訊息，請至 Discord 查看！", 200
+
 @app.route("/trigger_sync", methods=['GET'])
 def trigger_sync():
-    """手動強制同步並直接在網頁回傳原始第一筆資料結構"""
-    api_url = "https://mush.odyliao.cc/api/mushrooms"
-    params = {
-        "limit": "10",
-        "cache": "brief",
-        "levels": "3,4",
-        "sort": "discovered-desc",
-        "prioritize_low": "1",
-        "under_five": "1",
-        "bbox": "-85.45000,-35.75000,85.45000,61.80000"
-    }
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer": "https://mush.odyliao.cc/"
-    }
-    try:
-        res = requests.get(api_url, params=params, headers=headers, timeout=10)
-        raw_list = res.json().get("mushrooms", [])
-        if raw_list:
-            return jsonify({
-                "status": "success",
-                "sample_raw_mushroom": raw_list[0]
-            }), 200
-        else:
-            return jsonify({"status": "empty", "response": res.json()}), 200
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+    """強制手動執行一次點位抓取"""
+    fetch_and_notify_mushrooms()
+    return jsonify({"status": "synced", "count": len(live_mushrooms)}), 200
 
 # ==================== 6. 啟動排程與伺服器 ====================
 scheduler = BackgroundScheduler()
