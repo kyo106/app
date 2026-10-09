@@ -1,9 +1,9 @@
 import os
 import time
 import requests
+from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime, timezone, timedelta
 
 app = Flask(__name__)
 
@@ -18,9 +18,8 @@ LEVEL_MAP = {
     4: "巨大蘑菇"
 }
 
-# 經更正後的蘑菇種類對照表
 TYPE_MAP = {
-    # 基礎顏色 (不推播)
+    # 基礎顏色
     "2": "紅色",
     "6": "黃色",
     "3": "灰色",
@@ -29,6 +28,7 @@ TYPE_MAP = {
     "9": "粉紅色",
     "5": "藍色",
     "10": "神秘活動",
+    "19": "活動特殊",
     
     # 元素與特殊蘑菇
     "17": "電",
@@ -37,16 +37,49 @@ TYPE_MAP = {
     "13": "水晶",
     "18": "毒",
     "ice": "冰藍",
+    "26": "冰藍",
     "event": "神秘活動",
     "mystery": "神秘活動"
 }
 
-# 【推播白名單】：只允許純元素蘑菇 (電17, 水12, 火11, 水晶13, 毒18, 冰藍26/ice)
+# 【推播白名單】：只允許純元素蘑菇 (排除 10, 19, event, mystery)
 TARGET_SPECIAL_TYPES = {"11", "12", "13", "17", "18", "26", "ice"}
 
-# ==================== 2. Discord Webhook 發送函式 ====================
+# ==================== 2. 地理位置反查輔助函式 ====================
+def get_location_name(item, lat, lng):
+    """取得地點名稱：優先從 API 欄位抓取，次之嘗試反向地理編碼"""
+    # 1. 檢查 API 是否自帶地點資訊
+    for key in ["location", "city", "place_name", "address", "country"]:
+        val = item.get(key)
+        if val and isinstance(val, str) and val.strip():
+            return val.strip()
+
+    # 組合 country 與 city (若有的話)
+    country = item.get("country", "")
+    city = item.get("city", "")
+    if country or city:
+        return f"{country} {city}".strip()
+
+    # 2. 若 API 沒有直接給文字，且有合法座標，呼叫快速免費地理反查
+    if lat and lng and lat != "None" and lng != "None":
+        try:
+            geo_url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lng}&format=json&accept-language=zh-TW"
+            headers = {"User-Agent": "PikminBloomRadarBot/1.0"}
+            r = requests.get(geo_url, headers=headers, timeout=3)
+            if r.status_code == 200:
+                addr = r.json().get("address", {})
+                country = addr.get("country", "")
+                city = addr.get("city") or addr.get("state") or addr.get("town") or addr.get("county") or ""
+                if country or city:
+                    return f"{country} - {city}".strip()
+        except Exception:
+            pass
+
+    return "未知區域 (未提供地區名稱)"
+
+# ==================== 3. Discord Webhook 發送函式 ====================
 def send_discord_notification(mushroom):
-    """發送卡片訊息至 Discord (含台灣通報時間與防限流)"""
+    """發送卡片訊息至 Discord (含所在區域、座標與通報時間)"""
     if not DISCORD_WEBHOOK_URL:
         print("⚠️ 未設定 DISCORD_WEBHOOK_URL，跳過推播。")
         return
@@ -58,14 +91,18 @@ def send_discord_notification(mushroom):
 
     color = 0xF1C40F if mushroom.get('level') == 4 else 0x3498DB
 
+    # 座標排版
+    coord_display = f"`{mushroom['lat']}, {mushroom['lng']}`" if mushroom['lat'] != "未提供" else "座標暫時隱藏"
+
     embed_data = {
         "title": f"🚨 發現目標蘑菇：{mushroom['title']}",
         "color": color,
-        "timestamp": datetime.now(timezone.utc).isoformat(),  # Discord 原生時間標記
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "fields": [
             {"name": "🍄 等級與種類", "value": mushroom['title'], "inline": True},
             {"name": "⏰ 通報時間", "value": time_str, "inline": True},
-            {"name": "🌐 座標", "value": f"`{mushroom['lat']}, {mushroom['lng']}`", "inline": False},
+            {"name": "📍 所在區域", "value": f"**{mushroom['location']}**", "inline": False},
+            {"name": "🌐 座標", "value": coord_display, "inline": False},
             {"name": "🗺️ Google 地圖導航", "value": f"[點此前往 Google 地圖]({mushroom['gmaps']})", "inline": False}
         ],
         "footer": {
@@ -74,7 +111,7 @@ def send_discord_notification(mushroom):
     }
 
     payload = {
-        "username": "Bruno的皮克敏雷達",
+        "username": "皮克敏雷達管家",
         "avatar_url": "https://cdn-icons-png.flaticon.com/512/616/616490.png",
         "embeds": [embed_data]
     }
@@ -83,7 +120,7 @@ def send_discord_notification(mushroom):
         try:
             resp = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=8)
             if resp.status_code in [200, 204]:
-                print(f"✅ 已成功推播至 Discord: {mushroom['title']}")
+                print(f"✅ 已成功推播至 Discord: {mushroom['title']} ({mushroom['location']})")
                 time.sleep(1)
                 return
             elif resp.status_code == 429:
@@ -97,7 +134,7 @@ def send_discord_notification(mushroom):
             print(f"❌ Discord 發送異常: {e}")
             break
 
-# ==================== 3. 點位同步與通報任務 ====================
+# ==================== 4. 點位同步與通報任務 ====================
 def fetch_and_notify_mushrooms():
     global live_mushrooms, notified_ids
     print("📡 開始同步 mush.odyliao.cc 點位...")
@@ -127,26 +164,38 @@ def fetch_and_notify_mushrooms():
                 m_id = str(item.get("id"))
                 m_level = item.get("level")
                 m_type = str(item.get("type", ""))
-                lat = item.get("lat")
-                lng = item.get("lng")
+                
+                # 相容多種經緯度欄位命名
+                lat = item.get("lat") or item.get("latitude")
+                lng = item.get("lng") or item.get("longitude")
+                
+                # 地點區域名稱 (例如：巴西-瑪瑙斯 Manaus)
+                location_name = get_location_name(item, lat, lng)
 
                 type_name = TYPE_MAP.get(m_type, f"種類{m_type}")
                 level_name = LEVEL_MAP.get(m_level, f"等級{m_level}")
                 title = f"{type_name} {level_name}"
+
+                lat_str = str(lat) if lat is not None else "未提供"
+                lng_str = str(lng) if lng is not None else "未提供"
+
+                gmaps_url = f"https://www.google.com/maps/search/?api=1&query={lat},{lng}" if lat and lng else "https://www.google.com/maps"
 
                 m_obj = {
                     "id": m_id,
                     "title": title,
                     "level": m_level,
                     "type": m_type,
-                    "lat": lat,
-                    "lng": lng,
-                    "gmaps": f"https://www.google.com/maps/search/?api=1&query={lat},{lng}"
+                    "location": location_name,
+                    "lat": lat_str,
+                    "lng": lng_str,
+                    "gmaps": gmaps_url
                 }
                 parsed_list.append(m_obj)
 
-                # 【推播過濾條件】：
-                # 排除神秘活動與種類 19 (10, 19, event, mystery)
+                # 【推播過濾】：
+                # 排除神秘活動與活動菇 (10, 19, event, mystery)
+                # 只推播：非活動的巨大菇 或 純元素大菇 (電、水、火、水晶、毒、冰藍)
                 is_excluded = (m_type in ["10", "19", "event", "mystery"])
                 is_target = not is_excluded and (m_level == 4 or (m_level == 3 and m_type in TARGET_SPECIAL_TYPES))
 
@@ -162,7 +211,7 @@ def fetch_and_notify_mushrooms():
     except Exception as e:
         print(f"抓取異常: {e}")
 
-# ==================== 4. 路由設定與防休眠 ====================
+# ==================== 5. 路由設定與防休眠 ====================
 @app.route("/", methods=['GET'])
 def home():
     """提供 UptimeRobot 監控防休眠 (回傳 200 OK)"""
@@ -174,18 +223,19 @@ def home():
 
 @app.route("/test_discord", methods=['GET'])
 def test_discord():
-    """手動測試 Discord Webhook 連線"""
+    """手動測試 Discord Webhook 連線 (含範例區域)"""
     test_obj = {
-        "title": "測試水晶大蘑菇",
+        "title": "測試電大蘑菇",
         "level": 3,
-        "lat": "25.0330",
-        "lng": "121.5654",
-        "gmaps": "https://www.google.com/maps/search/?api=1&query=25.0330,121.5654"
+        "location": "巴西-瑪瑙斯 Manaus",
+        "lat": "-3.119027",
+        "lng": "-60.021731",
+        "gmaps": "https://www.google.com/maps/search/?api=1&query=-3.119027,-60.021731"
     }
     send_discord_notification(test_obj)
     return "已發送 Discord 測試訊息，請檢查頻道！", 200
 
-# ==================== 5. 啟動排程與伺服器 ====================
+# ==================== 6. 啟動排程與伺服器 ====================
 scheduler = BackgroundScheduler()
 scheduler.add_job(func=fetch_and_notify_mushrooms, trigger="interval", minutes=2)
 scheduler.start()
