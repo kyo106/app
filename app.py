@@ -275,22 +275,35 @@ def home():
         "cached_mushrooms": len(live_mushrooms)
     }), 200
 
-@app.route("/test_discord", methods=['GET'])
-def test_discord():
-    """手動測試：以巴拿馬戴維為例"""
-    loc_test = "巴拿馬-戴維 David"
-    lat, lng = geocode_location_to_coords(loc_test)
-    test_obj = {
-        "title": "毒 大蘑菇",
-        "level": 3,
-        "location": loc_test,
-        "lat": str(lat) if lat else "8.4273",
-        "lng": str(lng) if lng else "-82.4309",
-        "is_exact_gps": False,
-        "gmaps": f"https://www.google.com/maps/search/?api=1&query={lat or 8.4273},{lng or -82.4309}"
+@app.route("/trigger_sync", methods=['GET'])
+def trigger_sync():
+    """手動強制同步並直接在網頁回傳原始第一筆資料結構"""
+    api_url = "https://mush.odyliao.cc/api/mushrooms"
+    params = {
+        "limit": "10",
+        "cache": "brief",
+        "levels": "3,4",
+        "sort": "discovered-desc",
+        "prioritize_low": "1",
+        "under_five": "1",
+        "bbox": "-85.45000,-35.75000,85.45000,61.80000"
     }
-    send_discord_notification(test_obj)
-    return "已發送巴拿馬-戴維測試訊息，請至 Discord 查看！", 200
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://mush.odyliao.cc/"
+    }
+    try:
+        res = requests.get(api_url, params=params, headers=headers, timeout=10)
+        raw_list = res.json().get("mushrooms", [])
+        if raw_list:
+            return jsonify({
+                "status": "success",
+                "sample_raw_mushroom": raw_list[0]
+            }), 200
+        else:
+            return jsonify({"status": "empty", "response": res.json()}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # ==================== 6. 啟動排程與伺服器 ====================
 scheduler = BackgroundScheduler()
