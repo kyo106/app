@@ -71,46 +71,50 @@ def extract_location_text(item):
     return "未知區域"
 
 def geocode_location_to_coords(location_text):
-    """多引擎智慧切詞地理反查 (解決宏都拉斯/智利等城市偶發查不到問題)"""
+    """多引擎三重備援地理反查 (支援特殊拼音城市與免限流高可用)"""
     if not location_text or location_text == "未知區域":
         return None, None
 
     if location_text in LOCATION_COORD_CACHE:
         return LOCATION_COORD_CACHE[location_text]
 
-    # 1. 拆解地名文字 (例如: 宏都拉斯-德古西加巴 Tegucigalpa)
-    # 提取純英文詞 (Tegucigalpa)
+    # 1. 拆解地名文字 (例如: 匈牙利-佩奇 Pecs)
     english_part = re.sub(r'[\u4e00-\u9fff\-]', ' ', location_text).strip()
     english_part = re.sub(r'\s+', ' ', english_part)
 
-    # 提取中文部分 (宏都拉斯 德古西加巴)
     chinese_part = re.sub(r'[a-zA-Z\-]', ' ', location_text).strip()
     chinese_part = re.sub(r'\s+', ' ', chinese_part)
 
-    # 組合查詢候選詞 (命中率由高到低排序)
     queries = []
-    if len(english_part) >= 3:
-        queries.append(english_part)  # 例如: Tegucigalpa
+    # 組合英文與國家 (例: Pecs, Hungary)
+    country_part = ""
+    if "-" in location_text:
+        country_part = location_text.split("-")[0].strip()
+
+    if len(english_part) >= 2:
+        if country_part:
+            queries.append(f"{english_part} {country_part}")
+        queries.append(english_part)
+
     if chinese_part:
-        # 如果有空格，嘗試取最後一個詞（通常是城市名，例如 德古西加巴）
         parts = chinese_part.split()
         if len(parts) > 1:
-            queries.append(parts[-1])  # 德古西加巴
-            queries.append(chinese_part)  # 宏都拉斯 德古西加巴
+            queries.append(parts[-1])  # 佩奇
+            queries.append(chinese_part)
         else:
             queries.append(chinese_part)
 
     queries.append(location_text.replace("-", " ").strip())
-
-    # 去重
     unique_queries = list(dict.fromkeys([q for q in queries if len(q) >= 2]))
 
-    # 2. 優先嘗試 Photon (基於 OSM，專為搜尋優化、無 1 秒限流且全球命中率高)
+    # 引擎 1：Photon API (反應極快，專門處理生僻/簡化拼音城市如 Pecs)
     for q in unique_queries:
         try:
-            photon_url = "https://photon.komoot.io/api/"
-            params = {"q": q, "limit": 1}
-            res = requests.get(photon_url, params=params, timeout=3.5)
+            res = requests.get(
+                "https://photon.komoot.io/api/",
+                params={"q": q, "limit": 1},
+                timeout=3
+            )
             if res.status_code == 200:
                 features = res.json().get("features", [])
                 if features:
@@ -122,13 +126,34 @@ def geocode_location_to_coords(location_text):
         except Exception:
             pass
 
-    # 3. 備用方案：OpenStreetMap Nominatim
+    # 引擎 2：Open-Meteo Geocoding API (完全免費、全球百萬城市資料庫、支援無變音拼寫)
     for q in unique_queries:
         try:
-            geo_url = "https://nominatim.openstreetmap.org/search"
-            params = {"q": q, "format": "json", "limit": 1}
-            headers = {"User-Agent": "PikminRadarBotEnhanced/3.0 (contact: admin@pikminradar.local)"}
-            res = requests.get(geo_url, params=params, headers=headers, timeout=4)
+            res = requests.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={"name": q, "count": 1, "language": "zh"},
+                timeout=3
+            )
+            if res.status_code == 200:
+                results = res.json().get("results", [])
+                if results:
+                    approx_lat = round(float(results[0]["latitude"]), 6)
+                    approx_lng = round(float(results[0]["longitude"]), 6)
+                    LOCATION_COORD_CACHE[location_text] = (approx_lat, approx_lng)
+                    return approx_lat, approx_lng
+        except Exception:
+            pass
+
+    # 引擎 3：OpenStreetMap Nominatim
+    for q in unique_queries:
+        try:
+            headers = {"User-Agent": "PikminRadarBotGlobal/3.5"}
+            res = requests.get(
+                "https://nominatim.openstreetmap.org/search",
+                params={"q": q, "format": "json", "limit": 1},
+                headers=headers,
+                timeout=3
+            )
             if res.status_code == 200:
                 data = res.json()
                 if data and len(data) > 0:
@@ -139,7 +164,6 @@ def geocode_location_to_coords(location_text):
         except Exception:
             pass
 
-    # 查不到時不快取太久，避免暫時性網路抖動鎖死
     return None, None
 
 # ==================== 3. Discord Webhook 發送函式 ====================
