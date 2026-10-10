@@ -71,46 +71,46 @@ def extract_location_text(item):
     return "未知區域"
 
 def geocode_location_to_coords(location_text):
-    """雙引擎地理反查 (OSM + Photon 備用)，徹底解決部分城市估算失敗問題"""
+    """多引擎智慧切詞地理反查 (解決宏都拉斯/智利等城市偶發查不到問題)"""
     if not location_text or location_text == "未知區域":
         return None, None
 
     if location_text in LOCATION_COORD_CACHE:
         return LOCATION_COORD_CACHE[location_text]
 
-    # 提取英文城市/地區名 (例如 Valparaiso, Dubrovnik, Da Nang)
+    # 1. 拆解地名文字 (例如: 宏都拉斯-德古西加巴 Tegucigalpa)
+    # 提取純英文詞 (Tegucigalpa)
     english_part = re.sub(r'[\u4e00-\u9fff\-]', ' ', location_text).strip()
     english_part = re.sub(r'\s+', ' ', english_part)
-    clean_all = location_text.replace("-", " ").strip()
 
+    # 提取中文部分 (宏都拉斯 德古西加巴)
+    chinese_part = re.sub(r'[a-zA-Z\-]', ' ', location_text).strip()
+    chinese_part = re.sub(r'\s+', ' ', chinese_part)
+
+    # 組合查詢候選詞 (命中率由高到低排序)
     queries = []
     if len(english_part) >= 3:
-        queries.append(english_part)
-    queries.append(clean_all)
+        queries.append(english_part)  # 例如: Tegucigalpa
+    if chinese_part:
+        # 如果有空格，嘗試取最後一個詞（通常是城市名，例如 德古西加巴）
+        parts = chinese_part.split()
+        if len(parts) > 1:
+            queries.append(parts[-1])  # 德古西加巴
+            queries.append(chinese_part)  # 宏都拉斯 德古西加巴
+        else:
+            queries.append(chinese_part)
 
-    # 1. 優先查詢 OpenStreetMap Nominatim
-    for q in queries:
-        try:
-            geo_url = "https://nominatim.openstreetmap.org/search"
-            params = {"q": q, "format": "json", "limit": 1}
-            headers = {"User-Agent": "PikminRadarBotEnhanced/2.1 (contact: bot@pikmin.radar)"}
-            res = requests.get(geo_url, params=params, headers=headers, timeout=5)
-            if res.status_code == 200:
-                data = res.json()
-                if data and len(data) > 0:
-                    approx_lat = round(float(data[0]["lat"]), 6)
-                    approx_lng = round(float(data[0]["lon"]), 6)
-                    LOCATION_COORD_CACHE[location_text] = (approx_lat, approx_lng)
-                    return approx_lat, approx_lng
-        except Exception:
-            pass
+    queries.append(location_text.replace("-", " ").strip())
 
-    # 2. 備用引擎：Photon (免金鑰、反應極快的全球地理搜尋引擎)
-    for q in queries:
+    # 去重
+    unique_queries = list(dict.fromkeys([q for q in queries if len(q) >= 2]))
+
+    # 2. 優先嘗試 Photon (基於 OSM，專為搜尋優化、無 1 秒限流且全球命中率高)
+    for q in unique_queries:
         try:
             photon_url = "https://photon.komoot.io/api/"
             params = {"q": q, "limit": 1}
-            res = requests.get(photon_url, params=params, timeout=4)
+            res = requests.get(photon_url, params=params, timeout=3.5)
             if res.status_code == 200:
                 features = res.json().get("features", [])
                 if features:
@@ -122,7 +122,24 @@ def geocode_location_to_coords(location_text):
         except Exception:
             pass
 
-    LOCATION_COORD_CACHE[location_text] = (None, None)
+    # 3. 備用方案：OpenStreetMap Nominatim
+    for q in unique_queries:
+        try:
+            geo_url = "https://nominatim.openstreetmap.org/search"
+            params = {"q": q, "format": "json", "limit": 1}
+            headers = {"User-Agent": "PikminRadarBotEnhanced/3.0 (contact: admin@pikminradar.local)"}
+            res = requests.get(geo_url, params=params, headers=headers, timeout=4)
+            if res.status_code == 200:
+                data = res.json()
+                if data and len(data) > 0:
+                    approx_lat = round(float(data[0]["lat"]), 6)
+                    approx_lng = round(float(data[0]["lon"]), 6)
+                    LOCATION_COORD_CACHE[location_text] = (approx_lat, approx_lng)
+                    return approx_lat, approx_lng
+        except Exception:
+            pass
+
+    # 查不到時不快取太久，避免暫時性網路抖動鎖死
     return None, None
 
 # ==================== 3. Discord Webhook 發送函式 ====================
