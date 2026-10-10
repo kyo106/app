@@ -119,7 +119,7 @@ def send_discord_notification(mushroom):
         coord_text = f"`{mushroom['lat']}, {mushroom['lng']}` (精準座標)"
         gmaps_text = f"[點此前向 Google 地圖]({mushroom['gmaps']})"
     elif mushroom.get('lat') and mushroom.get('lat') != "未提供":
-        coord_text = f"`{mushroom['lat']}, {mushroom['lng']}` *(城鎮中心估算)*"
+        coord_text = f"{mushroom['lat']}, {mushroom['lng']}"
         gmaps_text = f"[點此導航至該區域中心]({mushroom['gmaps']})"
     else:
         coord_text = "🔒 原站已隱藏 GPS (無法估算城鎮中心)"
