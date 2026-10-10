@@ -188,21 +188,22 @@ def fetch_and_notify_mushrooms():
 
     api_url = "https://mush.odyliao.cc/api/mushrooms"
     params = {
-        "limit": "1000",
-        "cache": "brief",
+        "limit": "200",
         "levels": "3,4",
-        "sort": "discovered-desc",
-        "prioritize_low": "1",
-        "under_five": "1",
-        "bbox": "-85.45000,-35.75000,85.45000,61.80000"
+        "sort": "discovered-desc"
     }
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer": "https://mush.odyliao.cc/"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://mush.odyliao.cc/",
+        "Origin": "https://mush.odyliao.cc"
     }
 
     try:
         res = requests.get(api_url, params=params, headers=headers, timeout=10)
+        
+        print(f"📡 API 狀態碼: {res.status_code}, 回傳長度: {len(res.text)}")
+        
         if res.status_code == 200:
             raw_list = res.json().get("mushrooms", [])
             parsed_list = []
