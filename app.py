@@ -70,33 +70,49 @@ def extract_location_text(item):
     return "未知區域"
 
 def geocode_location_to_coords(location_text):
-    """根據地名 (如: 巴拿馬-戴維 David) 透過 OSM 計算中心經緯度"""
+    """根據地名透過 OSM 計算中心經緯度 (支援中英文分離備援查詢)"""
     if not location_text or location_text == "未知區域":
         return None, None
 
     if location_text in LOCATION_COORD_CACHE:
         return LOCATION_COORD_CACHE[location_text]
 
-    query_str = location_text.replace("-", " ").strip()
+    # 準備搜尋關鍵字清單
+    # 例如 "美國-費城 Philadelphia" -> 嘗試 ["Philadelphia", "費城, 美國", "美國 費城 Philadelphia"]
+    queries_to_try = []
     
-    try:
-        geo_url = "https://nominatim.openstreetmap.org/search"
-        params = {
-            "q": query_str,
-            "format": "json",
-            "limit": 1
-        }
-        headers = {"User-Agent": "PikminRadarBotGeo/1.1 (contact: bot@pikmin.local)"}
-        res = requests.get(geo_url, params=params, headers=headers, timeout=4)
-        if res.status_code == 200:
-            data = res.json()
-            if data and len(data) > 0:
-                approx_lat = round(float(data[0]["lat"]), 6)
-                approx_lng = round(float(data[0]["lon"]), 6)
-                LOCATION_COORD_CACHE[location_text] = (approx_lat, approx_lng)
-                return approx_lat, approx_lng
-    except Exception as e:
-        print(f"地理反查失敗 ({location_text}): {e}")
+    # 提取英文部分 (如: Philadelphia, Da Nang)
+    english_part = re.sub(r'[\u4e00-\u9fff\-]', ' ', location_text).strip()
+    english_part = re.sub(r'\s+', ' ', english_part)
+    if len(english_part) >= 3:
+        queries_to_try.append(english_part)
+        
+    # 整串去符號版
+    clean_all = location_text.replace("-", " ").strip()
+    queries_to_try.append(clean_all)
+
+    headers = {"User-Agent": "PikminBloomRadarNotifier/2.0 (contact: admin@pikminradar.local)"}
+
+    for q in queries_to_try:
+        try:
+            geo_url = "https://nominatim.openstreetmap.org/search"
+            params = {
+                "q": q,
+                "format": "json",
+                "limit": 1
+            }
+            res = requests.get(geo_url, params=params, headers=headers, timeout=4)
+            if res.status_code == 200:
+                data = res.json()
+                if data and len(data) > 0:
+                    approx_lat = round(float(data[0]["lat"]), 6)
+                    approx_lng = round(float(data[0]["lon"]), 6)
+                    LOCATION_COORD_CACHE[location_text] = (approx_lat, approx_lng)
+                    time.sleep(1)  # 符合 OSM 每秒 1 次的頻率規定
+                    return approx_lat, approx_lng
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"OSM 查詢異常 ({q}): {e}")
 
     LOCATION_COORD_CACHE[location_text] = (None, None)
     return None, None
