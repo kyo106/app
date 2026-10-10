@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import requests
 from datetime import datetime, timezone, timedelta
@@ -77,17 +78,15 @@ def geocode_location_to_coords(location_text):
     if location_text in LOCATION_COORD_CACHE:
         return LOCATION_COORD_CACHE[location_text]
 
-    # 準備搜尋關鍵字清單
-    # 例如 "美國-費城 Philadelphia" -> 嘗試 ["Philadelphia", "費城, 美國", "美國 費城 Philadelphia"]
     queries_to_try = []
     
-    # 提取英文部分 (如: Philadelphia, Da Nang)
+    # 提取英文部分 (如: Philadelphia, Da Nang, David)
     english_part = re.sub(r'[\u4e00-\u9fff\-]', ' ', location_text).strip()
     english_part = re.sub(r'\s+', ' ', english_part)
     if len(english_part) >= 3:
         queries_to_try.append(english_part)
         
-    # 整串去符號版
+    # 整串去連字號版 (如: 巴拿馬 戴維 David)
     clean_all = location_text.replace("-", " ").strip()
     queries_to_try.append(clean_all)
 
@@ -101,25 +100,25 @@ def geocode_location_to_coords(location_text):
                 "format": "json",
                 "limit": 1
             }
-            res = requests.get(geo_url, params=params, headers=headers, timeout=4)
+            res = requests.get(geo_url, params=params, headers=headers, timeout=2.5)
             if res.status_code == 200:
                 data = res.json()
                 if data and len(data) > 0:
                     approx_lat = round(float(data[0]["lat"]), 6)
                     approx_lng = round(float(data[0]["lon"]), 6)
                     LOCATION_COORD_CACHE[location_text] = (approx_lat, approx_lng)
-                    time.sleep(1)  # 符合 OSM 每秒 1 次的頻率規定
+                    time.sleep(1)
                     return approx_lat, approx_lng
             time.sleep(0.5)
         except Exception as e:
-            print(f"OSM 查詢異常 ({q}): {e}")
+            print(f"OSM 查詢略過 ({q}): {e}")
 
     LOCATION_COORD_CACHE[location_text] = (None, None)
     return None, None
 
 # ==================== 3. Discord Webhook 發送函式 ====================
 def send_discord_notification(mushroom):
-    """發送卡片訊息至 Discord (含所在區域、概略座標與 Google 地圖)"""
+    """發送卡片訊息至 Discord (乾淨純文字座標排版)"""
     if not DISCORD_WEBHOOK_URL:
         print("⚠️ 未設定 DISCORD_WEBHOOK_URL，跳過推播。")
         return
@@ -131,14 +130,12 @@ def send_discord_notification(mushroom):
 
     color = 0xF1C40F if mushroom.get('level') == 4 else 0x3498DB
 
-    if mushroom.get('is_exact_gps'):
-        coord_text = f"`{mushroom['lat']}, {mushroom['lng']}` (精準座標)"
-        gmaps_text = f"[點此前向 Google 地圖]({mushroom['gmaps']})"
-    elif mushroom.get('lat') and mushroom.get('lat') != "未提供":
+    # 純淨座標顯示 (無反引號、無備註文字)
+    if mushroom.get('lat') and mushroom.get('lat') != "未提供":
         coord_text = f"{mushroom['lat']}, {mushroom['lng']}"
-        gmaps_text = f"[點此導航至該區域中心]({mushroom['gmaps']})"
+        gmaps_text = f"[點此前往 Google 地圖]({mushroom['gmaps']})"
     else:
-        coord_text = "🔒 原站已隱藏 GPS (無法估算城鎮中心)"
+        coord_text = "🔒 原站已隱藏 GPS (無法估算座標)"
         gmaps_text = "[點此前往雷達網站](https://mush.odyliao.cc/)"
 
     embed_data = {
@@ -201,9 +198,8 @@ def fetch_and_notify_mushrooms():
 
     try:
         res = requests.get(api_url, params=params, headers=headers, timeout=10)
-        
         print(f"📡 API 狀態碼: {res.status_code}, 回傳長度: {len(res.text)}")
-        
+
         if res.status_code == 200:
             raw_list = res.json().get("mushrooms", [])
             parsed_list = []
@@ -260,8 +256,11 @@ def fetch_and_notify_mushrooms():
                 is_excluded = (m_type in ["10", "19", "event", "mystery"])
                 is_target = not is_excluded and (m_level == 4 or (m_level == 3 and m_type in TARGET_SPECIAL_TYPES))
 
-                if len(notified_ids) > 0 and is_target and m_id not in notified_ids:
-                    send_discord_notification(m_obj)
+                try:
+                    if len(notified_ids) > 0 and is_target and m_id not in notified_ids:
+                        send_discord_notification(m_obj)
+                except Exception as notify_err:
+                    print(f"個別推播發送失敗: {notify_err}")
 
                 notified_ids.add(m_id)
 
@@ -283,7 +282,7 @@ def home():
 
 @app.route("/test_discord", methods=['GET'])
 def test_discord():
-    """手動測試巴拿馬-戴維推播卡片"""
+    """手動測試巴拿馬-戴維推播卡片 (純文字座標排版)"""
     loc_test = "巴拿馬-戴維 David"
     lat, lng = geocode_location_to_coords(loc_test)
     test_obj = {
