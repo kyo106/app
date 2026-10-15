@@ -14,7 +14,7 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 live_mushrooms = []
 notified_ids = set()
 
-# 地名座標快取，避免重複呼叫地理編碼
+# 地名座標快取，避免重複呼叫外部查詢
 LOCATION_COORD_CACHE = {}
 
 LEVEL_MAP = {
@@ -62,7 +62,7 @@ def extract_location_text(item):
     elif city:
         return city
 
-    # 備用容錯檢查
+    # 備用欄位檢查
     for key in ["location", "place", "area", "address"]:
         val = item.get(key)
         if val and isinstance(val, str) and val.strip():
@@ -71,99 +71,55 @@ def extract_location_text(item):
     return "未知區域"
 
 def geocode_location_to_coords(location_text):
-    """多引擎三重備援地理反查 (支援特殊拼音城市與免限流高可用)"""
+    """根據地名透過高速 Photon API 計算中心經緯度 (極限逾時保護，絕不卡死排程)"""
     if not location_text or location_text == "未知區域":
         return None, None
 
     if location_text in LOCATION_COORD_CACHE:
         return LOCATION_COORD_CACHE[location_text]
 
-    # 1. 拆解地名文字 (例如: 匈牙利-佩奇 Pecs)
+    # 提取英文城市部分
     english_part = re.sub(r'[\u4e00-\u9fff\-]', ' ', location_text).strip()
     english_part = re.sub(r'\s+', ' ', english_part)
+    search_q = english_part if len(english_part) >= 3 else location_text.replace("-", " ").strip()
 
-    chinese_part = re.sub(r'[a-zA-Z\-]', ' ', location_text).strip()
-    chinese_part = re.sub(r'\s+', ' ', chinese_part)
+    try:
+        res = requests.get(
+            "https://photon.komoot.io/api/",
+            params={"q": search_q, "limit": 1},
+            timeout=2.0
+        )
+        if res.status_code == 200:
+            features = res.json().get("features", [])
+            if features:
+                coords = features[0]["geometry"]["coordinates"]
+                approx_lat = round(float(coords[1]), 6)
+                approx_lng = round(float(coords[0]), 6)
+                LOCATION_COORD_CACHE[location_text] = (approx_lat, approx_lng)
+                return approx_lat, approx_lng
+    except Exception:
+        pass
 
-    queries = []
-    # 組合英文與國家 (例: Pecs, Hungary)
-    country_part = ""
-    if "-" in location_text:
-        country_part = location_text.split("-")[0].strip()
+    # 備用：若 Photon 查不到，嘗試 OpenStreetMap (2秒逾時)
+    try:
+        headers = {"User-Agent": "PikminRadarBotQuick/2.0"}
+        res = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": search_q, "format": "json", "limit": 1},
+            headers=headers,
+            timeout=2.0
+        )
+        if res.status_code == 200:
+            data = res.json()
+            if data and len(data) > 0:
+                approx_lat = round(float(data[0]["lat"]), 6)
+                approx_lng = round(float(data[0]["lon"]), 6)
+                LOCATION_COORD_CACHE[location_text] = (approx_lat, approx_lng)
+                return approx_lat, approx_lng
+    except Exception:
+        pass
 
-    if len(english_part) >= 2:
-        if country_part:
-            queries.append(f"{english_part} {country_part}")
-        queries.append(english_part)
-
-    if chinese_part:
-        parts = chinese_part.split()
-        if len(parts) > 1:
-            queries.append(parts[-1])  # 佩奇
-            queries.append(chinese_part)
-        else:
-            queries.append(chinese_part)
-
-    queries.append(location_text.replace("-", " ").strip())
-    unique_queries = list(dict.fromkeys([q for q in queries if len(q) >= 2]))
-
-    # 引擎 1：Photon API (反應極快，專門處理生僻/簡化拼音城市如 Pecs)
-    for q in unique_queries:
-        try:
-            res = requests.get(
-                "https://photon.komoot.io/api/",
-                params={"q": q, "limit": 1},
-                timeout=3
-            )
-            if res.status_code == 200:
-                features = res.json().get("features", [])
-                if features:
-                    coords = features[0]["geometry"]["coordinates"]
-                    approx_lng = round(float(coords[0]), 6)
-                    approx_lat = round(float(coords[1]), 6)
-                    LOCATION_COORD_CACHE[location_text] = (approx_lat, approx_lng)
-                    return approx_lat, approx_lng
-        except Exception:
-            pass
-
-    # 引擎 2：Open-Meteo Geocoding API (完全免費、全球百萬城市資料庫、支援無變音拼寫)
-    for q in unique_queries:
-        try:
-            res = requests.get(
-                "https://geocoding-api.open-meteo.com/v1/search",
-                params={"name": q, "count": 1, "language": "zh"},
-                timeout=3
-            )
-            if res.status_code == 200:
-                results = res.json().get("results", [])
-                if results:
-                    approx_lat = round(float(results[0]["latitude"]), 6)
-                    approx_lng = round(float(results[0]["longitude"]), 6)
-                    LOCATION_COORD_CACHE[location_text] = (approx_lat, approx_lng)
-                    return approx_lat, approx_lng
-        except Exception:
-            pass
-
-    # 引擎 3：OpenStreetMap Nominatim
-    for q in unique_queries:
-        try:
-            headers = {"User-Agent": "PikminRadarBotGlobal/3.5"}
-            res = requests.get(
-                "https://nominatim.openstreetmap.org/search",
-                params={"q": q, "format": "json", "limit": 1},
-                headers=headers,
-                timeout=3
-            )
-            if res.status_code == 200:
-                data = res.json()
-                if data and len(data) > 0:
-                    approx_lat = round(float(data[0]["lat"]), 6)
-                    approx_lng = round(float(data[0]["lon"]), 6)
-                    LOCATION_COORD_CACHE[location_text] = (approx_lat, approx_lng)
-                    return approx_lat, approx_lng
-        except Exception:
-            pass
-
+    LOCATION_COORD_CACHE[location_text] = (None, None)
     return None, None
 
 # ==================== 3. Discord Webhook 發送函式 ====================
@@ -273,7 +229,6 @@ def fetch_and_notify_mushrooms():
                     final_lat, final_lng = raw_lat, raw_lng
                     is_exact = True
                 else:
-                    # 原站 GPS 為 null，透過地名計算概略座標
                     approx_lat, approx_lng = geocode_location_to_coords(location_name)
                     final_lat, final_lng = approx_lat, approx_lng
                     is_exact = False
@@ -301,7 +256,7 @@ def fetch_and_notify_mushrooms():
                 parsed_list.append(m_obj)
 
                 # 【推播過濾】：
-                # 排除神秘活動與活動菇 (10, 19, event, mystery)
+                # 排除神秘活動與活動特殊菇 (10, 19, event, mystery)
                 # 僅通報：非活動巨大菇 或 純元素大菇 (電、水、火、水晶、毒、冰藍)
                 is_excluded = (m_type in ["10", "19", "event", "mystery"])
                 is_target = not is_excluded and (m_level == 4 or (m_level == 3 and m_type in TARGET_SPECIAL_TYPES))
@@ -324,6 +279,7 @@ def fetch_and_notify_mushrooms():
 # ==================== 5. 路由設定與防休眠 ====================
 @app.route("/", methods=['GET'])
 def home():
+    """提供 UptimeRobot 監控防休眠 (回傳 200 OK)"""
     return jsonify({
         "status": "online",
         "message": "Pikmin Bloom Discord Bot is Running!",
@@ -332,7 +288,7 @@ def home():
 
 @app.route("/test_discord", methods=['GET'])
 def test_discord():
-    """手動測試巴拿馬-戴維推播卡片 (純文字座標排版)"""
+    """手動測試推播卡片 (純文字座標排版)"""
     loc_test = "巴拿馬-戴維 David"
     lat, lng = geocode_location_to_coords(loc_test)
     test_obj = {
@@ -354,10 +310,19 @@ def trigger_sync():
     return jsonify({"status": "synced", "count": len(live_mushrooms)}), 200
 
 # ==================== 6. 啟動排程與伺服器 ====================
-scheduler = BackgroundScheduler()
-scheduler.add_job(func=fetch_and_notify_mushrooms, trigger="interval", minutes=2)
+# 加強型排程設定：防併發堆疊、超時寬容
+scheduler = BackgroundScheduler(timezone="Asia/Taipei")
+scheduler.add_job(
+    func=fetch_and_notify_mushrooms,
+    trigger="interval",
+    minutes=2,
+    max_instances=1,
+    coalesce=True,
+    misfire_grace_time=60
+)
 scheduler.start()
 
+# 延遲非同步啟動第一次同步
 scheduler.add_job(func=fetch_and_notify_mushrooms, trigger="date")
 
 if __name__ == "__main__":
