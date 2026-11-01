@@ -41,7 +41,11 @@ LOCATION_COORD_CACHE = {
     "salto": (-31.383333, -57.966667),
     "薩爾托": (-31.383333, -57.966667),
     "portland": (45.5152, -122.6784),
-    "波特蘭": (45.5152, -122.6784)
+    "波特蘭": (45.5152, -122.6784),
+    "daegu": (35.87028, 128.59111),
+    "大邱": (35.87028, 128.59111),
+    "christchurch": (-43.53333, 172.63333),
+    "基督城": (-43.53333, 172.63333)
 }
 
 LEVEL_MAP = {
@@ -52,7 +56,7 @@ LEVEL_MAP = {
 TYPE_MAP = {
     "2": "紅色", "6": "黃色", "3": "灰色", "8": "紫色",
     "7": "白色", "9": "粉紅色", "5": "藍色",
-    "10": "神秘活動", "19": "活動特殊",
+    "10": "神秘活動", "19": "活動特殊", "22": "活動特殊",
     "17": "電", "12": "水", "11": "火", "13": "水晶",
     "18": "毒", "ice": "冰藍", "26": "冰藍",
     "event": "神秘活動", "mystery": "神秘活動"
@@ -193,7 +197,6 @@ def fetch_and_notify_mushrooms():
     print("📡 開始同步 mush.odyliao.cc 點位...")
 
     api_url = "https://mush.odyliao.cc/api/mushrooms"
-    # 與網頁完全一致的即時參數：抓取最近更新的未滿 5 人點位
     params = {
         "limit": "300",
         "levels": "3,4",
@@ -259,12 +262,11 @@ def fetch_and_notify_mushrooms():
                 parsed_list.append(m_obj)
 
                 # 【推播過濾】：
-                # 排除神秘活動與活動特殊菇 (10, 19, event, mystery)
+                # 排除神秘活動、活動特殊菇及種類 22 (10, 19, 22, event, mystery)
                 # 僅通報：非活動巨大菇 或 純元素大菇 (電、水、火、水晶、毒、冰藍)
-                is_excluded = (m_type in ["10", "19", "event", "mystery"])
+                is_excluded = (m_type in ["10", "19", "22", "event", "mystery"])
                 is_target = not is_excluded and (m_level == 4 or (m_level == 3 and m_type in TARGET_SPECIAL_TYPES))
 
-                # 即時推播：新出點位立即送出
                 if len(notified_ids) > 0 and is_target and m_id not in notified_ids:
                     notified_ids.add(m_id)
                     try:
@@ -312,7 +314,6 @@ def trigger_sync():
     return jsonify({"status": "synced", "count": len(live_mushrooms)}), 200
 
 # ==================== 6. 啟動排程與伺服器 ====================
-# 改為每 1 分鐘高頻即時巡檢
 scheduler = BackgroundScheduler(timezone="Asia/Taipei")
 scheduler.add_job(
     func=fetch_and_notify_mushrooms,
